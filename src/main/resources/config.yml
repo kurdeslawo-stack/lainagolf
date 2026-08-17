@@ -1,0 +1,33 @@
+# Lobby minigolfa - gracz wraca tutaj po zakonczeniu gry.
+lobby:
+  world: world
+  x: 0.5
+  y: 64.0
+  z: 0.5
+
+# Mozesz dodawac dowolna liczbe map.
+maps:
+  sulfur_track_1:
+    corner1: {world: world_adventure, x: 1000, y: 50, z: 1000}
+    corner2: {world: world_adventure, x: 1100, y: 100, z: 1100}
+
+    playerSpawn: {world: world_adventure, x: 1005.5, y: 64.0, z: 1050.5}
+    ballSpawn: {world: world_adventure, x: 1008.5, y: 64.0, z: 1050.5}
+
+    # Dokladna pozycja srodka pilki, ktora uznajemy za mete.
+    finishLoc: {world: world_adventure, x: 1095.0, y: 64.0, z: 1050.0}
+
+    # Komenda wykonywana jako konsola (bez znaczenia, czy wpiszesz / na poczatku).
+    # {PLAYER} -> nick gracza
+    # {LEVEL}  -> nazwa planszy
+    winCommand: "give {PLAYER} sulfur 5"
+
+    # Czas w sekundach.
+    maxTime: 180.0
+
+    # Maksymalna liczba dozwolonych uderzen.
+    maxStrokes: 15
+
+    # Musi byc blokiem z vanilla tagu #sulfur_cube_swallowable.
+    # STONE jest poprawnym przykladem i daje archetyp Slow Bouncy.
+    block: "STONE"

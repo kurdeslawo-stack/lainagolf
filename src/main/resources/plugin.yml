@@ -1,0 +1,11 @@
+name: LainaGolf
+version: '3.0'
+main: pl.laina.golf.LainaGolf
+api-version: '26.2'
+author: Laina
+description: System minigolfa wykorzystujacy naturalna fizyke Sulfur Cube z Minecraft 26.2.
+
+commands:
+  minigolf:
+    description: Glowna komenda systemu minigolfa.
+    usage: /minigolf join <mapa> <gracz>
