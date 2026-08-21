@@ -1,6 +1,5 @@
 package pl.laina.golf;
 
-import io.papermc.paper.event.entity.EntityCollideWithEntityEvent;
 import io.papermc.paper.event.entity.EntityPushedByEntityAttackEvent;
 import io.papermc.paper.event.player.PrePlayerAttackEntityEvent;
 import java.util.ArrayList;
@@ -330,16 +329,6 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         session.strokes++;
         updateBossBar(session, System.nanoTime());
         attacker.sendMessage(ChatColor.GREEN + "Uderzenie " + session.strokes + "/" + session.map.maxStrokes);
-    }
-
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    public void onBallBodyCollision(EntityCollideWithEntityEvent event) {
-        for (Entity entity : event.getEntities()) {
-            if (isManagedBall(entity.getUniqueId())) {
-                event.setCancelled(true);
-                return;
-            }
-        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
