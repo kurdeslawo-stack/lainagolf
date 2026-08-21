@@ -35,6 +35,8 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerBucketEntityEvent;
+import org.bukkit.event.player.PlayerInteractAtEntityEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerShearEntityEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
@@ -341,6 +343,20 @@ public final class LainaGolf extends JavaPlugin implements Listener {
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBallInteract(PlayerInteractEntityEvent event) {
+        if (isManagedBall(event.getRightClicked().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBallInteractAt(PlayerInteractAtEntityEvent event) {
+        if (isManagedBall(event.getRightClicked().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBallPushed(EntityPushedByEntityAttackEvent event) {
         GolfSession session = sessionsByBall.get(event.getEntity().getUniqueId());
         if (session == null) {
@@ -553,7 +569,11 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         }
 
         if (map.isBusy) {
-            sender.sendMessage(ChatColor.RED + "Mapa jest juz zajeta.");
+            String busyMessage = ChatColor.RED + "Ta plansza minigolfa jest obecnie zajeta.";
+            sender.sendMessage(busyMessage);
+            if (!sender.equals(target)) {
+                target.sendMessage(busyMessage);
+            }
             return true;
         }
 
