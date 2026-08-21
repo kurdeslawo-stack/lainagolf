@@ -17,6 +17,9 @@ import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Tag;
 import org.bukkit.World;
+import org.bukkit.boss.BarColor;
+import org.bukkit.boss.BarStyle;
+import org.bukkit.boss.BossBar;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
@@ -192,6 +195,8 @@ public final class LainaGolf extends JavaPlugin implements Listener {
                 continue;
             }
 
+            updateBossBar(session, now);
+
             if (now >= session.deadlineNanos) {
                 player.sendMessage(ChatColor.RED + "Czas minal. Koniec gry.");
                 finishSession(session, false, true, false);
@@ -229,6 +234,35 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         }
 
         protectBusyMaps();
+    }
+
+    private void updateBossBar(GolfSession session, long now) {
+        long remainingNanos = Math.max(0L, session.deadlineNanos - now);
+        double progress = session.durationNanos <= 0L
+                ? 0.0
+                : (double) remainingNanos / (double) session.durationNanos;
+        progress = Math.max(0.0, Math.min(1.0, progress));
+
+        long remainingSeconds = (long) Math.ceil(remainingNanos / 1_000_000_000.0);
+        session.bossBar.setProgress(progress);
+        session.bossBar.setTitle(
+                "MINIGOLF | Czas: " + formatClock(remainingSeconds)
+                        + " | Uderzenia: " + session.strokes + "/" + session.map.maxStrokes
+        );
+
+        if (progress <= 0.15) {
+            session.bossBar.setColor(BarColor.RED);
+        } else if (progress <= 0.35) {
+            session.bossBar.setColor(BarColor.YELLOW);
+        } else {
+            session.bossBar.setColor(BarColor.GREEN);
+        }
+    }
+
+    private String formatClock(long totalSeconds) {
+        long minutes = totalSeconds / 60L;
+        long seconds = totalSeconds % 60L;
+        return String.format(Locale.ROOT, "%02d:%02d", minutes, seconds);
     }
 
     private void protectBusyMaps() {
@@ -287,6 +321,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         }
 
         session.strokes++;
+        updateBossBar(session, System.nanoTime());
         attacker.sendMessage(ChatColor.GREEN + "Uderzenie " + session.strokes + "/" + session.map.maxStrokes);
     }
 
@@ -405,6 +440,8 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         activeSessions.put(player.getUniqueId(), session);
         sessionsByBall.put(ball.getUniqueId(), session);
         map.ballEntity = ball;
+        session.bossBar.addPlayer(player);
+        updateBossBar(session, System.nanoTime());
 
         player.sendMessage(ChatColor.GREEN + "Zaczynasz " + map.name + "! Masz " + map.maxStrokes + " uderzen i " + formatSeconds(map.maxTime) + " sekund.");
     }
@@ -424,6 +461,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         session.ending = true;
         activeSessions.remove(session.player.getUniqueId(), session);
         sessionsByBall.remove(session.ball.getUniqueId(), session);
+        session.bossBar.removeAll();
         Player player = session.player;
 
         if (win) {
@@ -517,7 +555,9 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         private final SulfurCube ball;
         private final GolfMap map;
         private final GameMode previousGameMode;
+        private final long durationNanos;
         private final long deadlineNanos;
+        private final BossBar bossBar;
         private Location lastBallLocation;
         private int strokes = 0;
         private boolean ending = false;
@@ -528,8 +568,9 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             this.map = map;
             this.previousGameMode = previousGameMode;
             this.lastBallLocation = ball.getLocation().clone();
-            long durationNanos = (long) Math.ceil(map.maxTime * 1.0E9);
+            this.durationNanos = (long) Math.ceil(map.maxTime * 1.0E9);
             this.deadlineNanos = System.nanoTime() + durationNanos;
+            this.bossBar = Bukkit.createBossBar("MINIGOLF", BarColor.GREEN, BarStyle.SOLID);
         }
     }
 
