@@ -1,5 +1,6 @@
 package pl.laina.golf;
 
+import io.papermc.paper.event.entity.EntityCollideWithEntityEvent;
 import io.papermc.paper.event.entity.EntityPushedByEntityAttackEvent;
 import io.papermc.paper.event.player.PrePlayerAttackEntityEvent;
 import java.util.ArrayList;
@@ -330,6 +331,16 @@ public final class LainaGolf extends JavaPlugin implements Listener {
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBallBodyCollision(EntityCollideWithEntityEvent event) {
+        for (Entity entity : event.getEntities()) {
+            if (isManagedBall(entity.getUniqueId())) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBallPushed(EntityPushedByEntityAttackEvent event) {
         GolfSession session = sessionsByBall.get(event.getEntity().getUniqueId());
         if (session == null) {
@@ -409,6 +420,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             ball.setAdult();
             ball.setAgeLock(true);
             ball.setPersistent(true);
+            ball.setCollidable(false);
             ball.getEquipment().setItem(EquipmentSlot.BODY, new ItemStack(map.blockMaterial, 1), true);
             ball.getEquipment().setDropChance(EquipmentSlot.BODY, 0.0F);
             ball.setAI(false);
