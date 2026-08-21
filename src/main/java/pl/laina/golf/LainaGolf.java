@@ -12,7 +12,6 @@ import java.util.logging.Level;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.GameMode;
-import org.bukkit.Keyed;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -599,7 +598,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
                 throw new IllegalArgumentException("Nieprawidlowy blok dla Sulfur Cube: '" + blockName + "'.");
             }
 
-            if (!Tag.ITEMS_SULFUR_CUBE_SWALLOWABLE.isTagged((Keyed) material)) {
+            if (!Tag.ITEMS_SULFUR_CUBE_SWALLOWABLE.isTagged(material)) {
                 throw new IllegalArgumentException("Blok '" + material.name() + "' nie nalezy do vanilla tagu sulfur_cube_swallowable.");
             }
 
