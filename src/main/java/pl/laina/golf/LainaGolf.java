@@ -35,111 +35,117 @@ import org.bukkit.event.player.PlayerBucketEntityEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerShearEntityEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
-import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 
-public final class LainaGolf
-extends JavaPlugin
-implements Listener {
+public final class LainaGolf extends JavaPlugin implements Listener {
     private static final long GAME_TICK_PERIOD = 2L;
-    private static final long PREPARE_TICK_PERIOD = 2L;
-    private static final int BALL_PREPARE_TIMEOUT_TICKS = 100;
     private static final double FINISH_DISTANCE_SQUARED = 0.5;
     private static final double MAX_SEGMENT_CHECK_DISTANCE_SQUARED = 16.0;
-    private final Map<String, GolfMap> maps = new HashMap<String, GolfMap>();
-    private final Map<UUID, GolfSession> activeSessions = new HashMap<UUID, GolfSession>();
-    private final Map<UUID, GolfSession> sessionsByBall = new HashMap<UUID, GolfSession>();
-    private final Map<UUID, PendingPreparation> pendingPreparations = new HashMap<UUID, PendingPreparation>();
-    private final Map<UUID, PendingPreparation> pendingByBall = new HashMap<UUID, PendingPreparation>();
+
+    private final Map<String, GolfMap> maps = new HashMap<>();
+    private final Map<UUID, GolfSession> activeSessions = new HashMap<>();
+    private final Map<UUID, GolfSession> sessionsByBall = new HashMap<>();
+
     private Location lobbyLocation;
     private NamespacedKey golfBallKey;
     private NamespacedKey golfFeedItemKey;
 
+    @Override
     public void onEnable() {
-        this.golfBallKey = new NamespacedKey((Plugin)this, "golf_ball");
-        this.golfFeedItemKey = new NamespacedKey((Plugin)this, "golf_feed_item");
-        this.saveDefaultConfig();
-        if (!this.loadConfig()) {
-            this.getLogger().severe("LainaGolf zostaje wylaczony przez bledna konfiguracje.");
-            Bukkit.getPluginManager().disablePlugin((Plugin)this);
+        golfBallKey = new NamespacedKey(this, "golf_ball");
+        golfFeedItemKey = new NamespacedKey(this, "golf_feed_item");
+        saveDefaultConfig();
+
+        if (!loadConfig()) {
+            getLogger().severe("LainaGolf zostaje wylaczony przez bledna konfiguracje.");
+            Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
-        this.getServer().getPluginManager().registerEvents((Listener)this, (Plugin)this);
-        Objects.requireNonNull(this.getCommand("minigolf"), "Brak komendy minigolf w plugin.yml").setExecutor(this::onCommand);
-        Bukkit.getScheduler().runTaskTimer((Plugin)this, this::tickGames, 20L, 2L);
-        this.getLogger().info("LainaGolf 3.0 - gotowy.");
+
+        getServer().getPluginManager().registerEvents(this, this);
+        Objects.requireNonNull(getCommand("minigolf"), "Brak komendy minigolf w plugin.yml").setExecutor(this::onCommand);
+        Bukkit.getScheduler().runTaskTimer(this, this::tickGames, 20L, GAME_TICK_PERIOD);
+        getLogger().info("LainaGolf 3.0 - gotowy.");
     }
 
+    @Override
     public void onDisable() {
-        for (PendingPreparation preparation : new ArrayList<PendingPreparation>(this.pendingPreparations.values())) {
-            this.abortPreparation(preparation);
+        for (GolfSession session : new ArrayList<>(activeSessions.values())) {
+            finishSession(session, false, true, false);
         }
-        for (GolfSession session : new ArrayList<GolfSession>(this.activeSessions.values())) {
-            this.finishSession(session, false, true, false);
-        }
-        this.pendingPreparations.clear();
-        this.pendingByBall.clear();
-        this.activeSessions.clear();
-        this.sessionsByBall.clear();
-        for (GolfMap map : this.maps.values()) {
+
+        activeSessions.clear();
+        sessionsByBall.clear();
+
+        for (GolfMap map : maps.values()) {
             map.release();
         }
     }
 
     private boolean loadConfig() {
-        ConfigurationSection mapsSection;
-        this.reloadConfig();
-        this.maps.clear();
+        reloadConfig();
+        maps.clear();
         boolean valid = true;
-        this.lobbyLocation = this.parseLocation(this.getConfig().getConfigurationSection("lobby"));
-        if (this.lobbyLocation == null) {
-            this.getLogger().severe("Brak poprawnej lokalizacji lobby albo swiat lobby nie jest zaladowany.");
+
+        lobbyLocation = parseLocation(getConfig().getConfigurationSection("lobby"));
+        if (lobbyLocation == null) {
+            getLogger().severe("Brak poprawnej lokalizacji lobby albo swiat lobby nie jest zaladowany.");
             valid = false;
         }
-        if ((mapsSection = this.getConfig().getConfigurationSection("maps")) == null || mapsSection.getKeys(false).isEmpty()) {
-            this.getLogger().severe("Brak zdefiniowanych map w sekcji 'maps'.");
+
+        ConfigurationSection mapsSection = getConfig().getConfigurationSection("maps");
+        if (mapsSection == null || mapsSection.getKeys(false).isEmpty()) {
+            getLogger().severe("Brak zdefiniowanych map w sekcji 'maps'.");
             return false;
         }
+
         for (String key : mapsSection.getKeys(false)) {
             ConfigurationSection cfg = mapsSection.getConfigurationSection(key);
             if (cfg == null) {
-                this.getLogger().severe("Mapa '" + key + "' nie jest poprawna sekcja YAML.");
+                getLogger().severe("Mapa '" + key + "' nie jest poprawna sekcja YAML.");
                 valid = false;
                 continue;
             }
+
             try {
                 String lookupKey = key.toLowerCase(Locale.ROOT);
-                if (this.maps.containsKey(lookupKey)) {
+                if (maps.containsKey(lookupKey)) {
                     throw new IllegalArgumentException("Nazwa mapy duplikuje inna nazwe po pominieciu wielkosci liter.");
                 }
-                this.maps.put(lookupKey, new GolfMap(key, cfg));
-            }
-            catch (IllegalArgumentException ex) {
-                this.getLogger().log(Level.SEVERE, "Nie mozna zaladowac mapy '" + key + "': " + ex.getMessage());
+                maps.put(lookupKey, new GolfMap(key, cfg));
+            } catch (IllegalArgumentException ex) {
+                getLogger().log(Level.SEVERE, "Nie mozna zaladowac mapy '" + key + "': " + ex.getMessage());
                 valid = false;
             }
         }
-        if (this.maps.isEmpty()) {
+
+        if (maps.isEmpty()) {
             valid = false;
         }
-        ArrayList<GolfMap> loadedMaps = new ArrayList<GolfMap>(this.maps.values());
-        for (int i = 0; i < loadedMaps.size(); ++i) {
-            GolfMap first = (GolfMap)loadedMaps.get(i);
-            if (this.lobbyLocation != null && first.isInside(this.lobbyLocation)) {
-                this.getLogger().severe("Lobby znajduje sie wewnatrz mapy '" + first.name + "'. To powodowaloby petle teleportowania.");
+
+        ArrayList<GolfMap> loadedMaps = new ArrayList<>(maps.values());
+        for (int i = 0; i < loadedMaps.size(); i++) {
+            GolfMap first = loadedMaps.get(i);
+
+            if (lobbyLocation != null && first.isInside(lobbyLocation)) {
+                getLogger().severe("Lobby znajduje sie wewnatrz mapy '" + first.name + "'. To powodowaloby petle teleportowania.");
                 valid = false;
             }
-            for (int j = i + 1; j < loadedMaps.size(); ++j) {
-                GolfMap second = (GolfMap)loadedMaps.get(j);
-                if (!first.overlaps(second)) continue;
-                this.getLogger().severe("Mapy '" + first.name + "' i '" + second.name + "' nachodza na siebie. Zajete plansze konfliktowalyby ze soba.");
+
+            for (int j = i + 1; j < loadedMaps.size(); j++) {
+                GolfMap second = loadedMaps.get(j);
+                if (!first.overlaps(second)) {
+                    continue;
+                }
+                getLogger().severe("Mapy '" + first.name + "' i '" + second.name + "' nachodza na siebie. Zajete plansze konfliktowalyby ze soba.");
                 valid = false;
             }
         }
+
         return valid;
     }
 
@@ -147,76 +153,101 @@ implements Listener {
         if (cfg == null) {
             return null;
         }
+
         String worldName = cfg.getString("world");
         if (worldName == null || worldName.isBlank()) {
             return null;
         }
-        if (!(cfg.contains("x") && cfg.contains("y") && cfg.contains("z"))) {
+
+        if (!cfg.contains("x") || !cfg.contains("y") || !cfg.contains("z")) {
             return null;
         }
-        World world = Bukkit.getWorld((String)worldName);
+
+        World world = Bukkit.getWorld(worldName);
         if (world == null) {
             return null;
         }
+
         double x = cfg.getDouble("x");
         double y = cfg.getDouble("y");
         double z = cfg.getDouble("z");
-        if (!(Double.isFinite(x) && Double.isFinite(y) && Double.isFinite(z))) {
+
+        if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) {
             return null;
         }
+
         return new Location(world, x, y, z);
     }
 
     private void tickGames() {
         long now = System.nanoTime();
-        for (GolfSession session : new ArrayList<GolfSession>(this.activeSessions.values())) {
-            boolean finishReached;
-            if (session.ending) continue;
+
+        for (GolfSession session : new ArrayList<>(activeSessions.values())) {
+            if (session.ending) {
+                continue;
+            }
+
             Player player = session.player;
             if (!player.isOnline()) {
-                this.finishSession(session, false, false, false);
+                finishSession(session, false, false, false);
                 continue;
             }
+
             if (now >= session.deadlineNanos) {
-                player.sendMessage(String.valueOf(ChatColor.RED) + "Czas minal. Koniec gry.");
-                this.finishSession(session, false, true, false);
+                player.sendMessage(ChatColor.RED + "Czas minal. Koniec gry.");
+                finishSession(session, false, true, false);
                 continue;
             }
+
             if (!session.map.isInside(player.getLocation())) {
-                player.sendMessage(String.valueOf(ChatColor.RED) + "Wyszedles poza plansze. Koniec gry.");
-                this.finishSession(session, false, true, false);
+                player.sendMessage(ChatColor.RED + "Wyszedles poza plansze. Koniec gry.");
+                finishSession(session, false, true, false);
                 continue;
             }
+
             SulfurCube ball = session.ball;
             if (!ball.isValid() || ball.isDead()) {
-                player.sendMessage(String.valueOf(ChatColor.RED) + "Pilka przestala istniec. Koniec gry.");
-                this.finishSession(session, false, true, false);
+                player.sendMessage(ChatColor.RED + "Pilka przestala istniec. Koniec gry.");
+                finishSession(session, false, true, false);
                 continue;
             }
+
             Location currentBallLocation = ball.getLocation();
             if (!session.map.isInside(currentBallLocation)) {
-                this.resetToStart(session);
+                resetToStart(session);
                 continue;
             }
-            boolean bl = finishReached = session.map.isAtFinish(currentBallLocation) || session.map.segmentHitsFinish(session.lastBallLocation, currentBallLocation);
+
+            boolean finishReached = session.map.isAtFinish(currentBallLocation)
+                    || session.map.segmentHitsFinish(session.lastBallLocation, currentBallLocation);
+
             if (finishReached) {
-                this.finishSession(session, true, true, true);
+                finishSession(session, true, true, true);
                 continue;
             }
+
             session.lastBallLocation = currentBallLocation.clone();
         }
-        this.protectBusyMaps();
+
+        protectBusyMaps();
     }
 
     private void protectBusyMaps() {
-        for (GolfMap map : this.maps.values()) {
-            if (!map.isBusy || map.busyPlayerId == null) continue;
+        for (GolfMap map : maps.values()) {
+            if (!map.isBusy || map.busyPlayerId == null) {
+                continue;
+            }
+
             for (Player other : Bukkit.getOnlinePlayers()) {
-                if (other.getUniqueId().equals(map.busyPlayerId) || !map.isInside(other.getLocation())) continue;
-                if (this.lobbyLocation != null) {
-                    other.teleport(this.lobbyLocation);
+                if (other.getUniqueId().equals(map.busyPlayerId) || !map.isInside(other.getLocation())) {
+                    continue;
                 }
-                other.sendMessage(String.valueOf(ChatColor.RED) + "Ta plansza minigolfa jest obecnie zajeta.");
+
+                if (lobbyLocation != null) {
+                    other.teleport(lobbyLocation);
+                }
+
+                other.sendMessage(ChatColor.RED + "Ta plansza minigolfa jest obecnie zajeta.");
             }
         }
     }
@@ -226,108 +257,107 @@ implements Listener {
         session.ball.setVelocity(new Vector(0, 0, 0));
         session.player.teleport(session.map.playerSpawn);
         session.lastBallLocation = session.map.ballSpawn.clone();
-        session.player.sendMessage(String.valueOf(ChatColor.YELLOW) + "Pilka wypadla poza plansze. Powrot na start.");
+        session.player.sendMessage(ChatColor.YELLOW + "Pilka wypadla poza plansze. Powrot na start.");
     }
 
-    @EventHandler(priority=EventPriority.NORMAL, ignoreCancelled=true)
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onPreAttack(PrePlayerAttackEntityEvent event) {
-        UUID attackedId = event.getAttacked().getUniqueId();
-        PendingPreparation preparation = this.pendingByBall.get(attackedId);
-        if (preparation != null) {
-            event.setCancelled(true);
-            return;
-        }
-        GolfSession session = this.sessionsByBall.get(attackedId);
+        GolfSession session = sessionsByBall.get(event.getAttacked().getUniqueId());
         if (session == null) {
             return;
         }
+
         Player attacker = event.getPlayer();
         if (!attacker.getUniqueId().equals(session.player.getUniqueId())) {
             event.setCancelled(true);
-            attacker.sendMessage(String.valueOf(ChatColor.RED) + "To nie jest twoja pilka.");
+            attacker.sendMessage(ChatColor.RED + "To nie jest twoja pilka.");
             return;
         }
+
         if (session.ending) {
             event.setCancelled(true);
             return;
         }
+
         if (session.strokes >= session.map.maxStrokes) {
             event.setCancelled(true);
             session.ending = true;
-            attacker.sendMessage(String.valueOf(ChatColor.RED) + "Wykorzystales limit " + session.map.maxStrokes + " uderzen.");
-            Bukkit.getScheduler().runTask((Plugin)this, () -> this.finishSession(session, false, true, false));
+            attacker.sendMessage(ChatColor.RED + "Wykorzystales limit " + session.map.maxStrokes + " uderzen.");
+            Bukkit.getScheduler().runTask(this, () -> finishSession(session, false, true, false));
             return;
         }
-        ++session.strokes;
-        attacker.sendMessage(String.valueOf(ChatColor.GREEN) + "Uderzenie " + session.strokes + "/" + session.map.maxStrokes);
+
+        session.strokes++;
+        attacker.sendMessage(ChatColor.GREEN + "Uderzenie " + session.strokes + "/" + session.map.maxStrokes);
     }
 
-    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBallPushed(EntityPushedByEntityAttackEvent event) {
-        Player p;
-        GolfSession session = this.sessionsByBall.get(event.getEntity().getUniqueId());
+        GolfSession session = sessionsByBall.get(event.getEntity().getUniqueId());
         if (session == null) {
             return;
         }
+
         Entity entity = event.getPushedBy();
-        if (entity instanceof Player && !(p = (Player)entity).getUniqueId().equals(session.player.getUniqueId())) {
+        if (entity instanceof Player player && !player.getUniqueId().equals(session.player.getUniqueId())) {
             event.setCancelled(true);
         }
     }
 
-    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBallSheared(PlayerShearEntityEvent event) {
-        if (this.isManagedBall(event.getEntity().getUniqueId())) {
+        if (isManagedBall(event.getEntity().getUniqueId())) {
             event.setCancelled(true);
         }
     }
 
-    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBallBucketed(PlayerBucketEntityEvent event) {
-        if (this.isManagedBall(event.getEntity().getUniqueId())) {
+        if (isManagedBall(event.getEntity().getUniqueId())) {
             event.setCancelled(true);
         }
     }
 
-    @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPlayerTeleport(PlayerTeleportEvent event) {
         Location to = event.getTo();
         if (to == null) {
             return;
         }
+
         UUID playerId = event.getPlayer().getUniqueId();
-        for (GolfMap map : this.maps.values()) {
-            if (!map.isBusy || map.busyPlayerId == null || playerId.equals(map.busyPlayerId) || !map.isInside(to)) continue;
+        for (GolfMap map : maps.values()) {
+            if (!map.isBusy || map.busyPlayerId == null || playerId.equals(map.busyPlayerId) || !map.isInside(to)) {
+                continue;
+            }
+
             event.setCancelled(true);
-            event.getPlayer().sendMessage(String.valueOf(ChatColor.RED) + "Ta plansza minigolfa jest obecnie zajeta.");
+            event.getPlayer().sendMessage(ChatColor.RED + "Ta plansza minigolfa jest obecnie zajeta.");
             return;
         }
     }
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
-        GolfSession session;
-        UUID playerId = event.getPlayer().getUniqueId();
-        PendingPreparation preparation = this.pendingPreparations.get(playerId);
-        if (preparation != null) {
-            this.abortPreparation(preparation);
+        GolfSession session = activeSessions.get(event.getPlayer().getUniqueId());
+        if (session == null) {
+            return;
         }
-        if ((session = this.activeSessions.get(playerId)) != null) {
-            try {
-                event.getPlayer().setGameMode(session.previousGameMode);
-                if (this.lobbyLocation != null) {
-                    event.getPlayer().teleport(this.lobbyLocation);
-                }
+
+        try {
+            event.getPlayer().setGameMode(session.previousGameMode);
+            if (lobbyLocation != null) {
+                event.getPlayer().teleport(lobbyLocation);
             }
-            catch (Exception ex) {
-                this.getLogger().log(Level.WARNING, "Nie udalo sie przywrocic gracza " + event.getPlayer().getName() + " podczas wyjscia.", ex);
-            }
-            this.finishSession(session, false, false, false);
+        } catch (Exception ex) {
+            getLogger().log(Level.WARNING, "Nie udalo sie przywrocic gracza " + event.getPlayer().getName() + " podczas wyjscia.", ex);
         }
+
+        finishSession(session, false, false, false);
     }
 
     private boolean isManagedBall(UUID entityId) {
-        return this.sessionsByBall.containsKey(entityId) || this.pendingByBall.containsKey(entityId);
+        return sessionsByBall.containsKey(entityId);
     }
 
     private void prepareAndStartLevel(Player player, GolfMap map) {
@@ -335,93 +365,27 @@ implements Listener {
         map.isBusy = true;
         map.busyPlayerId = player.getUniqueId();
         SulfurCube ball = null;
-        Item feedItem = null;
+
         try {
-            BukkitTask task;
-            ball = (SulfurCube)map.ballSpawn.getWorld().spawnEntity(map.ballSpawn, EntityType.SULFUR_CUBE);
+            ball = (SulfurCube) map.ballSpawn.getWorld().spawnEntity(map.ballSpawn, EntityType.SULFUR_CUBE);
             ball.setAdult();
             ball.setAgeLock(true);
             ball.setPersistent(true);
-            ball.setAI(true);
-            ball.setWander(true);
+            ball.getEquipment().setItem(EquipmentSlot.BODY, new ItemStack(map.blockMaterial, 1), true);
+            ball.getEquipment().setDropChance(EquipmentSlot.BODY, 0.0F);
+            ball.setAI(false);
+            ball.setWander(false);
             ball.setVelocity(new Vector(0, 0, 0));
-            ball.getPersistentDataContainer().set(this.golfBallKey, PersistentDataType.BYTE, (Object)1);
-            feedItem = map.ballSpawn.getWorld().dropItem(map.ballSpawn.clone().add(0.0, 0.15, 0.0), new ItemStack(map.blockMaterial, 1));
-            feedItem.setVelocity(new Vector(0, 0, 0));
-            feedItem.setCanPlayerPickup(false);
-            feedItem.setWillAge(false);
-            feedItem.setUnlimitedLifetime(true);
-            feedItem.getPersistentDataContainer().set(this.golfFeedItemKey, PersistentDataType.BYTE, (Object)1);
-            PendingPreparation preparation = new PendingPreparation(player, map, ball, feedItem);
-            this.pendingPreparations.put(player.getUniqueId(), preparation);
-            this.pendingByBall.put(ball.getUniqueId(), preparation);
-            preparation.task = task = Bukkit.getScheduler().runTaskTimer((Plugin)this, () -> this.tickPreparation(preparation), 2L, 2L);
-        }
-        catch (Exception ex) {
-            if (feedItem != null && feedItem.isValid()) {
-                feedItem.remove();
-            }
+            ball.getPersistentDataContainer().set(golfBallKey, PersistentDataType.BYTE, (byte) 1);
+            startSession(player, map, ball);
+        } catch (Exception ex) {
             if (ball != null && ball.isValid()) {
                 ball.remove();
             }
+
             map.release();
-            this.getLogger().log(Level.SEVERE, "Nie udalo sie przygotowac mapy '" + map.name + "'.", ex);
-            player.sendMessage(String.valueOf(ChatColor.RED) + "Nie udalo sie przygotowac planszy minigolfa.");
-        }
-    }
-
-    private void tickPreparation(PendingPreparation preparation) {
-        boolean cubeAbsorbedBlock;
-        if (this.pendingPreparations.get(preparation.player.getUniqueId()) != preparation) {
-            this.cancelTask(preparation);
-            return;
-        }
-        preparation.waitedTicks = (int)((long)preparation.waitedTicks + 2L);
-        Player player = preparation.player;
-        SulfurCube ball = preparation.ball;
-        Item feedItem = preparation.feedItem;
-        if (!player.isOnline()) {
-            this.abortPreparation(preparation);
-            return;
-        }
-        if (!ball.isValid() || ball.isDead()) {
-            player.sendMessage(String.valueOf(ChatColor.RED) + "Nie udalo sie utworzyc pilki minigolfa.");
-            this.abortPreparation(preparation);
-            return;
-        }
-        boolean itemConsumed = !feedItem.isValid() || feedItem.isDead();
-        boolean bl = cubeAbsorbedBlock = !ball.hasAI();
-        if (itemConsumed && cubeAbsorbedBlock) {
-            this.pendingPreparations.remove(player.getUniqueId(), preparation);
-            this.pendingByBall.remove(ball.getUniqueId(), preparation);
-            this.cancelTask(preparation);
-            ball.teleport(preparation.map.ballSpawn);
-            ball.setVelocity(new Vector(0, 0, 0));
-            this.startSession(player, preparation.map, ball);
-            return;
-        }
-        if (preparation.waitedTicks >= 100) {
-            player.sendMessage(String.valueOf(ChatColor.RED) + "Sulfur Cube nie pochlonal bloku '" + preparation.map.blockMaterial.name() + "'.");
-            this.abortPreparation(preparation);
-        }
-    }
-
-    private void abortPreparation(PendingPreparation preparation) {
-        this.pendingPreparations.remove(preparation.player.getUniqueId(), preparation);
-        this.pendingByBall.remove(preparation.ball.getUniqueId(), preparation);
-        this.cancelTask(preparation);
-        if (preparation.feedItem.isValid()) {
-            preparation.feedItem.remove();
-        }
-        if (preparation.ball.isValid()) {
-            preparation.ball.remove();
-        }
-        preparation.map.release();
-    }
-
-    private void cancelTask(PendingPreparation preparation) {
-        if (preparation.task != null && !preparation.task.isCancelled()) {
-            preparation.task.cancel();
+            getLogger().log(Level.SEVERE, "Nie udalo sie przygotowac mapy '" + map.name + "'.", ex);
+            player.sendMessage(ChatColor.RED + "Nie udalo sie przygotowac planszy minigolfa.");
         }
     }
 
@@ -433,122 +397,120 @@ implements Listener {
             map.release();
             return;
         }
+
         GameMode previousGameMode = player.getGameMode();
         player.setGameMode(GameMode.ADVENTURE);
         player.teleport(map.playerSpawn);
+
         GolfSession session = new GolfSession(player, ball, map, previousGameMode);
-        this.activeSessions.put(player.getUniqueId(), session);
-        this.sessionsByBall.put(ball.getUniqueId(), session);
+        activeSessions.put(player.getUniqueId(), session);
+        sessionsByBall.put(ball.getUniqueId(), session);
         map.ballEntity = ball;
-        player.sendMessage(String.valueOf(ChatColor.GREEN) + "Zaczynasz " + map.name + "! Masz " + map.maxStrokes + " uderzen i " + this.formatSeconds(map.maxTime) + " sekund.");
+
+        player.sendMessage(ChatColor.GREEN + "Zaczynasz " + map.name + "! Masz " + map.maxStrokes + " uderzen i " + formatSeconds(map.maxTime) + " sekund.");
     }
 
     private String formatSeconds(double seconds) {
         if (seconds == Math.rint(seconds)) {
-            return Integer.toString((int)seconds);
+            return Integer.toString((int) seconds);
         }
         return Double.toString(seconds);
     }
 
-    /*
-     * WARNING - Removed try catching itself - possible behaviour change.
-     */
     private void finishSession(GolfSession session, boolean win, boolean teleportToLobby, boolean notifyPlayer) {
-        if (this.activeSessions.get(session.player.getUniqueId()) != session) {
+        if (activeSessions.get(session.player.getUniqueId()) != session) {
             return;
         }
+
         session.ending = true;
-        this.activeSessions.remove(session.player.getUniqueId(), session);
-        this.sessionsByBall.remove(session.ball.getUniqueId(), session);
+        activeSessions.remove(session.player.getUniqueId(), session);
+        sessionsByBall.remove(session.ball.getUniqueId(), session);
         Player player = session.player;
+
         if (win) {
-            String consoleCommand = session.map.winCommand.replace("{PLAYER}", player.getName()).replace("{LEVEL}", session.map.name);
+            String consoleCommand = session.map.winCommand
+                    .replace("{PLAYER}", player.getName())
+                    .replace("{LEVEL}", session.map.name);
+
             if (consoleCommand.startsWith("/")) {
                 consoleCommand = consoleCommand.substring(1);
             }
+
             try {
-                boolean accepted = Bukkit.dispatchCommand((CommandSender)Bukkit.getConsoleSender(), (String)consoleCommand);
+                boolean accepted = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), consoleCommand);
                 if (!accepted) {
-                    this.getLogger().warning("Komenda nagrody mapy '" + session.map.name + "' zwrocila false: " + consoleCommand);
+                    getLogger().warning("Komenda nagrody mapy '" + session.map.name + "' zwrocila false: " + consoleCommand);
                 }
+            } catch (Exception ex) {
+                getLogger().log(Level.SEVERE, "Blad przy wykonywaniu komendy nagrody mapy '" + session.map.name + "'.", ex);
             }
-            catch (Exception ex) {
-                this.getLogger().log(Level.SEVERE, "Blad przy wykonywaniu komendy nagrody mapy '" + session.map.name + "'.", ex);
-            }
+
             if (notifyPlayer && player.isOnline()) {
-                player.sendMessage(String.valueOf(ChatColor.GOLD) + "Plansza ukonczona!");
+                player.sendMessage(ChatColor.GOLD + "Plansza ukonczona!");
             }
         } else if (notifyPlayer && player.isOnline()) {
-            player.sendMessage(String.valueOf(ChatColor.RED) + "Koniec gry.");
+            player.sendMessage(ChatColor.RED + "Koniec gry.");
         }
+
         try {
             if (session.ball.isValid()) {
                 session.ball.remove();
             }
+
             if (player.isOnline()) {
                 player.setGameMode(session.previousGameMode);
-                if (teleportToLobby && this.lobbyLocation != null) {
-                    player.teleport(this.lobbyLocation);
+                if (teleportToLobby && lobbyLocation != null) {
+                    player.teleport(lobbyLocation);
                 }
             }
-        }
-        finally {
+        } finally {
             session.map.ballEntity = null;
             session.map.release();
         }
     }
 
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        Player player;
-        boolean allowed;
-        boolean bl = allowed = sender instanceof ConsoleCommandSender || sender instanceof Player && (player = (Player)sender).isOp();
+        boolean allowed = sender instanceof ConsoleCommandSender || sender instanceof Player player && player.isOp();
+
         if (!allowed) {
-            sender.sendMessage(String.valueOf(ChatColor.RED) + "Ta komenda jest tylko dla konsoli lub opa.");
+            sender.sendMessage(ChatColor.RED + "Ta komenda jest tylko dla konsoli lub opa.");
             return true;
         }
+
         if (args.length != 3 || !args[0].equalsIgnoreCase("join")) {
-            sender.sendMessage(String.valueOf(ChatColor.RED) + "Uzycie: /minigolf join <mapa> <gracz>");
+            sender.sendMessage(ChatColor.RED + "Uzycie: /minigolf join <mapa> <gracz>");
             return true;
         }
-        GolfMap map = this.maps.get(args[1].toLowerCase(Locale.ROOT));
+
+        GolfMap map = maps.get(args[1].toLowerCase(Locale.ROOT));
         if (map == null) {
-            sender.sendMessage(String.valueOf(ChatColor.RED) + "Mapa '" + args[1] + "' nie istnieje.");
+            sender.sendMessage(ChatColor.RED + "Mapa '" + args[1] + "' nie istnieje.");
             return true;
         }
-        Player target = Bukkit.getPlayerExact((String)args[2]);
+
+        Player target = Bukkit.getPlayerExact(args[2]);
         if (target == null) {
-            sender.sendMessage(String.valueOf(ChatColor.RED) + "Gracz '" + args[2] + "' nie jest online.");
+            sender.sendMessage(ChatColor.RED + "Gracz '" + args[2] + "' nie jest online.");
             return true;
         }
-        if (this.activeSessions.containsKey(target.getUniqueId()) || this.pendingPreparations.containsKey(target.getUniqueId())) {
-            sender.sendMessage(String.valueOf(ChatColor.RED) + "Ten gracz juz gra albo dolacza do minigolfa.");
+
+        if (activeSessions.containsKey(target.getUniqueId())) {
+            sender.sendMessage(ChatColor.RED + "Ten gracz juz gra w minigolfa.");
             return true;
         }
+
         if (map.isBusy) {
-            sender.sendMessage(String.valueOf(ChatColor.RED) + "Mapa jest juz zajeta.");
+            sender.sendMessage(ChatColor.RED + "Mapa jest juz zajeta.");
             return true;
         }
-        this.prepareAndStartLevel(target, map);
-        if (map.isBusy) {
-            sender.sendMessage(String.valueOf(ChatColor.GREEN) + "Przygotowywanie mapy " + map.name + " dla gracza " + target.getName() + ".");
+
+        prepareAndStartLevel(target, map);
+
+        if (activeSessions.containsKey(target.getUniqueId())) {
+            sender.sendMessage(ChatColor.GREEN + "Uruchomiono mape " + map.name + " dla gracza " + target.getName() + ".");
         }
+
         return true;
-    }
-
-    private static final class PendingPreparation {
-        private final Player player;
-        private final GolfMap map;
-        private final SulfurCube ball;
-        private final Item feedItem;
-        private BukkitTask task;
-        private int waitedTicks = 0;
-
-        private PendingPreparation(Player player, GolfMap map, SulfurCube ball, Item feedItem) {
-            this.player = player;
-            this.map = map;
-            this.ball = ball;
-            this.feedItem = feedItem;
-        }
     }
 
     private static final class GolfSession {
@@ -567,7 +529,7 @@ implements Listener {
             this.map = map;
             this.previousGameMode = previousGameMode;
             this.lastBallLocation = ball.getLocation().clone();
-            long durationNanos = (long)Math.ceil(map.maxTime * 1.0E9);
+            long durationNanos = (long) Math.ceil(map.maxTime * 1.0E9);
             this.deadlineNanos = System.nanoTime() + durationNanos;
         }
     }
@@ -586,48 +548,62 @@ implements Listener {
         private boolean isBusy;
         private UUID busyPlayerId;
         private SulfurCube ballEntity;
+
         private GolfMap(String name, ConfigurationSection cfg) {
-            this.isBusy = false;
+            isBusy = false;
+
             if (name.isBlank()) {
                 throw new IllegalArgumentException("Nazwa mapy nie moze byc pusta.");
             }
+
             this.name = name;
-            this.corner1 = this.requireLocation(cfg, "corner1");
-            this.corner2 = this.requireLocation(cfg, "corner2");
-            this.playerSpawn = this.requireLocation(cfg, "playerSpawn");
-            this.ballSpawn = this.requireLocation(cfg, "ballSpawn");
-            this.finishLoc = this.requireLocation(cfg, "finishLoc");
-            this.ensureSameWorld();
-            if (!this.isInside(this.playerSpawn)) {
+            corner1 = requireLocation(cfg, "corner1");
+            corner2 = requireLocation(cfg, "corner2");
+            playerSpawn = requireLocation(cfg, "playerSpawn");
+            ballSpawn = requireLocation(cfg, "ballSpawn");
+            finishLoc = requireLocation(cfg, "finishLoc");
+            ensureSameWorld();
+
+            if (!isInside(playerSpawn)) {
                 throw new IllegalArgumentException("playerSpawn lezy poza granicami mapy.");
             }
-            if (!this.isInside(this.ballSpawn)) {
+
+            if (!isInside(ballSpawn)) {
                 throw new IllegalArgumentException("ballSpawn lezy poza granicami mapy.");
             }
-            if (!this.isInside(this.finishLoc)) {
+
+            if (!isInside(finishLoc)) {
                 throw new IllegalArgumentException("finishLoc lezy poza granicami mapy.");
             }
-            this.winCommand = Objects.requireNonNullElse(cfg.getString("winCommand"), "").trim();
-            if (this.winCommand.isBlank()) {
+
+            winCommand = Objects.requireNonNullElse(cfg.getString("winCommand"), "").trim();
+            if (winCommand.isBlank()) {
                 throw new IllegalArgumentException("winCommand nie moze byc puste.");
             }
-            this.maxTime = cfg.getDouble("maxTime", -1.0);
-            this.maxStrokes = cfg.getInt("maxStrokes", -1);
-            if (!Double.isFinite(this.maxTime) || this.maxTime <= 0.0) {
+
+            maxTime = cfg.getDouble("maxTime", -1.0);
+            maxStrokes = cfg.getInt("maxStrokes", -1);
+
+            if (!Double.isFinite(maxTime) || maxTime <= 0.0) {
                 throw new IllegalArgumentException("maxTime musi byc liczba > 0.");
             }
-            if (this.maxStrokes <= 0) {
+
+            if (maxStrokes <= 0) {
                 throw new IllegalArgumentException("maxStrokes musi byc > 0.");
             }
+
             String blockName = Objects.requireNonNullElse(cfg.getString("block"), "").trim();
-            Material material = Material.matchMaterial((String)blockName);
+            Material material = Material.matchMaterial(blockName);
+
             if (material == null || !material.isBlock() || !material.isItem() || material.isAir()) {
                 throw new IllegalArgumentException("Nieprawidlowy blok dla Sulfur Cube: '" + blockName + "'.");
             }
-            if (!Tag.ITEMS_SULFUR_CUBE_SWALLOWABLE.isTagged((Keyed)material)) {
+
+            if (!Tag.ITEMS_SULFUR_CUBE_SWALLOWABLE.isTagged((Keyed) material)) {
                 throw new IllegalArgumentException("Blok '" + material.name() + "' nie nalezy do vanilla tagu sulfur_cube_swallowable.");
             }
-            this.blockMaterial = material;
+
+            blockMaterial = material;
         }
 
         private Location requireLocation(ConfigurationSection cfg, String key) {
@@ -639,97 +615,129 @@ implements Listener {
         }
 
         private void ensureSameWorld() {
-            World world = this.corner1.getWorld();
-            if (!(this.corner2.getWorld().equals((Object)world) && this.playerSpawn.getWorld().equals((Object)world) && this.ballSpawn.getWorld().equals((Object)world) && this.finishLoc.getWorld().equals((Object)world))) {
+            World world = corner1.getWorld();
+            if (!corner2.getWorld().equals(world)
+                    || !playerSpawn.getWorld().equals(world)
+                    || !ballSpawn.getWorld().equals(world)
+                    || !finishLoc.getWorld().equals(world)) {
                 throw new IllegalArgumentException("Wszystkie lokacje danej mapy musza byc w tym samym swiecie.");
             }
         }
 
         private boolean isInside(Location location) {
-            if (location.getWorld() == null || !location.getWorld().equals((Object)this.corner1.getWorld())) {
+            if (location.getWorld() == null || !location.getWorld().equals(corner1.getWorld())) {
                 return false;
             }
-            return location.getX() >= this.minX() && location.getX() <= this.maxX() && location.getY() >= this.minY() && location.getY() <= this.maxY() && location.getZ() >= this.minZ() && location.getZ() <= this.maxZ();
+
+            return location.getX() >= minX() && location.getX() <= maxX()
+                    && location.getY() >= minY() && location.getY() <= maxY()
+                    && location.getZ() >= minZ() && location.getZ() <= maxZ();
         }
 
         private boolean isAtFinish(Location ballLocation) {
-            return ballLocation.getWorld() != null && ballLocation.getWorld().equals((Object)this.finishLoc.getWorld()) && ballLocation.distanceSquared(this.finishLoc) < 0.5;
+            return ballLocation.getWorld() != null
+                    && ballLocation.getWorld().equals(finishLoc.getWorld())
+                    && ballLocation.distanceSquared(finishLoc) < FINISH_DISTANCE_SQUARED;
         }
 
         private boolean segmentHitsFinish(Location from, Location to) {
-            if (from == null || from.getWorld() == null || to.getWorld() == null || !from.getWorld().equals((Object)to.getWorld()) || !to.getWorld().equals((Object)this.finishLoc.getWorld())) {
+            if (from == null
+                    || from.getWorld() == null
+                    || to.getWorld() == null
+                    || !from.getWorld().equals(to.getWorld())
+                    || !to.getWorld().equals(finishLoc.getWorld())) {
                 return false;
             }
-            if (from.distanceSquared(to) > 16.0) {
+
+            if (from.distanceSquared(to) > MAX_SEGMENT_CHECK_DISTANCE_SQUARED) {
                 return false;
             }
+
             Vector a = from.toVector();
             Vector b = to.toVector();
-            Vector p = this.finishLoc.toVector();
+            Vector p = finishLoc.toVector();
             Vector ab = b.clone().subtract(a);
             double lengthSquared = ab.lengthSquared();
+
             if (lengthSquared < 1.0E-9) {
                 return false;
             }
+
             double t = p.clone().subtract(a).dot(ab) / lengthSquared;
             t = Math.max(0.0, Math.min(1.0, t));
             Vector closest = a.clone().add(ab.multiply(t));
-            return closest.distanceSquared(p) < 0.5;
+            return closest.distanceSquared(p) < FINISH_DISTANCE_SQUARED;
         }
 
         private boolean overlaps(GolfMap other) {
-            if (!this.corner1.getWorld().equals((Object)other.corner1.getWorld())) {
+            if (!corner1.getWorld().equals(other.corner1.getWorld())) {
                 return false;
             }
-            return Math.max(this.minX(), other.minX()) < Math.min(this.maxX(), other.maxX()) && Math.max(this.minY(), other.minY()) < Math.min(this.maxY(), other.maxY()) && Math.max(this.minZ(), other.minZ()) < Math.min(this.maxZ(), other.maxZ());
+
+            return Math.max(minX(), other.minX()) < Math.min(maxX(), other.maxX())
+                    && Math.max(minY(), other.minY()) < Math.min(maxY(), other.maxY())
+                    && Math.max(minZ(), other.minZ()) < Math.min(maxZ(), other.maxZ());
         }
 
         private double minX() {
-            return Math.min(this.corner1.getX(), this.corner2.getX());
+            return Math.min(corner1.getX(), corner2.getX());
         }
 
         private double maxX() {
-            return Math.max(this.corner1.getX(), this.corner2.getX());
+            return Math.max(corner1.getX(), corner2.getX());
         }
 
         private double minY() {
-            return Math.min(this.corner1.getY(), this.corner2.getY());
+            return Math.min(corner1.getY(), corner2.getY());
         }
 
         private double maxY() {
-            return Math.max(this.corner1.getY(), this.corner2.getY());
+            return Math.max(corner1.getY(), corner2.getY());
         }
 
         private double minZ() {
-            return Math.min(this.corner1.getZ(), this.corner2.getZ());
+            return Math.min(corner1.getZ(), corner2.getZ());
         }
 
         private double maxZ() {
-            return Math.max(this.corner1.getZ(), this.corner2.getZ());
+            return Math.max(corner1.getZ(), corner2.getZ());
         }
 
         private void cleanup() {
-            Location middle = new Location(this.corner1.getWorld(), (this.minX() + this.maxX()) / 2.0, (this.minY() + this.maxY()) / 2.0, (this.minZ() + this.maxZ()) / 2.0);
-            double radiusX = (this.maxX() - this.minX()) / 2.0 + 2.0;
-            double radiusY = (this.maxY() - this.minY()) / 2.0 + 2.0;
-            double radiusZ = (this.maxZ() - this.minZ()) / 2.0 + 2.0;
-            for (Entity entity : this.corner1.getWorld().getNearbyEntities(middle, radiusX, radiusY, radiusZ)) {
-                Item item;
-                if (!this.isInside(entity.getLocation())) continue;
+            Location middle = new Location(
+                    corner1.getWorld(),
+                    (minX() + maxX()) / 2.0,
+                    (minY() + maxY()) / 2.0,
+                    (minZ() + maxZ()) / 2.0
+            );
+
+            double radiusX = (maxX() - minX()) / 2.0 + 2.0;
+            double radiusY = (maxY() - minY()) / 2.0 + 2.0;
+            double radiusZ = (maxZ() - minZ()) / 2.0 + 2.0;
+
+            for (Entity entity : corner1.getWorld().getNearbyEntities(middle, radiusX, radiusY, radiusZ)) {
+                if (!isInside(entity.getLocation())) {
+                    continue;
+                }
+
                 if (entity instanceof Mob) {
                     entity.remove();
                     continue;
                 }
-                if (!(entity instanceof Item) || !(item = (Item)entity).getPersistentDataContainer().has(LainaGolf.this.golfFeedItemKey, PersistentDataType.BYTE)) continue;
-                item.remove();
+
+                if (entity instanceof Item item
+                        && item.getPersistentDataContainer().has(golfFeedItemKey, PersistentDataType.BYTE)) {
+                    item.remove();
+                }
             }
-            this.ballEntity = null;
+
+            ballEntity = null;
         }
 
         private void release() {
-            this.isBusy = false;
-            this.busyPlayerId = null;
-            this.ballEntity = null;
+            isBusy = false;
+            busyPlayerId = null;
+            ballEntity = null;
         }
     }
 }
