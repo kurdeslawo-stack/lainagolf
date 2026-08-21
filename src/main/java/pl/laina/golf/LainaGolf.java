@@ -173,12 +173,16 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         double x = cfg.getDouble("x");
         double y = cfg.getDouble("y");
         double z = cfg.getDouble("z");
+        double yaw = cfg.getDouble("yaw", 0.0);
+        double pitch = cfg.getDouble("pitch", 0.0);
 
-        if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) {
+        if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)
+                || !Double.isFinite(yaw) || !Double.isFinite(pitch)
+                || pitch < -90.0 || pitch > 90.0) {
             return null;
         }
 
-        return new Location(world, x, y, z);
+        return new Location(world, x, y, z, (float) yaw, (float) pitch);
     }
 
     private void tickGames() {
