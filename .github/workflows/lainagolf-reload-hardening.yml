@@ -1,0 +1,153 @@
+name: LainaGolf reload and hardening
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.issue.title == 'RUN_LAINAGOLF_RELOAD_HARDENING'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch LainaGolf
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/main/java/pl/laina/golf/LainaGolf.java')
+          s = p.read_text(encoding='utf-8')
+
+          s = s.replace('import org.bukkit.entity.Mob;\n', '', 1)
+          s = s.replace('private static final long GAME_TICK_PERIOD = 2L;', 'private static final long GAME_TICK_PERIOD = 1L;', 1)
+
+          marker = '''    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+          boolean allowed = sender instanceof ConsoleCommandSender || sender instanceof Player player && player.isOp();
+
+          if (!allowed) {
+              sender.sendMessage(ChatColor.RED + "Ta komenda jest tylko dla konsoli lub opa.");
+              return true;
+          }
+
+          if (args.length != 3 || !args[0].equalsIgnoreCase("join")) {
+              sender.sendMessage(ChatColor.RED + "Uzycie: /minigolf join <mapa> <gracz>");
+              return true;
+          }
+'''
+
+          replacement = '''    private void reloadPluginConfig(CommandSender sender) {
+          Map<String, GolfMap> previousMaps = new HashMap<>(maps);
+          Location previousLobby = lobbyLocation == null ? null : lobbyLocation.clone();
+
+          boolean loaded;
+          try {
+              loaded = loadConfig();
+          } catch (Exception ex) {
+              loaded = false;
+              getLogger().log(Level.SEVERE, "Blad podczas przeladowywania config.yml.", ex);
+          }
+
+          if (!loaded) {
+              maps.clear();
+              maps.putAll(previousMaps);
+              lobbyLocation = previousLobby;
+              sender.sendMessage(ChatColor.RED + "Nie udalo sie przeladowac config.yml. Poprzednia konfiguracja pozostaje aktywna.");
+              return;
+          }
+
+          for (GolfSession session : new ArrayList<>(activeSessions.values())) {
+              if (session.player.isOnline()) {
+                  session.player.sendMessage(ChatColor.YELLOW + "Konfiguracja minigolfa zostala przeladowana. Biezaca proba zostala zakonczona.");
+              }
+              finishSession(session, false, true, false);
+          }
+
+          for (GolfMap previousMap : previousMaps.values()) {
+              previousMap.release();
+              boolean stillExists = false;
+              for (GolfMap currentMap : maps.values()) {
+                  if (currentMap.name.equals(previousMap.name)) {
+                      stillExists = true;
+                      break;
+                  }
+              }
+
+              if (!stillExists) {
+                  unregisterLegacyObjective("GolfHits_" + previousMap.name);
+                  unregisterLegacyObjective("GolfTime_" + previousMap.name);
+              }
+          }
+
+          setupRankingObjectives();
+          sender.sendMessage(ChatColor.GREEN + "LainaGolf: config.yml przeladowany. Zaladowano map: " + maps.size() + ".");
+      }
+
+          public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+          boolean allowed = sender instanceof ConsoleCommandSender || sender instanceof Player player && player.isOp();
+
+          if (!allowed) {
+              sender.sendMessage(ChatColor.RED + "Ta komenda jest tylko dla konsoli lub opa.");
+              return true;
+          }
+
+          if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
+              reloadPluginConfig(sender);
+              return true;
+          }
+
+          if (args.length != 3 || !args[0].equalsIgnoreCase("join")) {
+              sender.sendMessage(ChatColor.RED + "Uzycie: /minigolf join <mapa> <gracz> lub /minigolf reload");
+              return true;
+          }
+'''
+
+          if marker not in s:
+              raise SystemExit('onCommand marker not found')
+          s = s.replace(marker, replacement, 1)
+
+          old_cleanup = '''                if (entity instanceof Mob) {
+                  entity.remove();
+                  continue;
+              }
+
+              if (entity instanceof Item item
+                      && item.getPersistentDataContainer().has(golfFeedItemKey, PersistentDataType.BYTE)) {
+                  item.remove();
+              }
+'''
+          new_cleanup = '''                if (entity.getPersistentDataContainer().has(golfBallKey, PersistentDataType.BYTE)) {
+                  entity.remove();
+                  continue;
+              }
+
+              if (entity instanceof Item item
+                      && item.getPersistentDataContainer().has(golfFeedItemKey, PersistentDataType.BYTE)) {
+                  item.remove();
+              }
+'''
+          if old_cleanup not in s:
+              raise SystemExit('cleanup block not found')
+          s = s.replace(old_cleanup, new_cleanup, 1)
+
+          p.write_text(s, encoding='utf-8')
+
+          plugin = Path('src/main/resources/plugin.yml')
+          y = plugin.read_text(encoding='utf-8')
+          y = y.replace('    usage: /minigolf join <mapa> <gracz>\n', '    usage: /minigolf <join <mapa> <gracz>|reload>\n', 1)
+          plugin.write_text(y, encoding='utf-8')
+          PY
+
+      - name: Commit changes
+        shell: bash
+        run: |
+          rm .github/workflows/lainagolf-reload-hardening.yml
+          git config user.name "LainaGolf Fix Bot"
+          git config user.email "actions@github.com"
+          git add src/main/java/pl/laina/golf/LainaGolf.java src/main/resources/plugin.yml .github/workflows/lainagolf-reload-hardening.yml
+          git commit -m "Add safe minigolf config reload and harden map cleanup"
+          git push
