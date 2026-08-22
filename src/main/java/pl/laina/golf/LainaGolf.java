@@ -37,7 +37,6 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Item;
-import org.bukkit.entity.Mob;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
 import org.bukkit.entity.SulfurCube;
@@ -64,7 +63,7 @@ import org.bukkit.util.RayTraceResult;
 import org.bukkit.util.Vector;
 
 public final class LainaGolf extends JavaPlugin implements Listener {
-    private static final long GAME_TICK_PERIOD = 2L;
+    private static final long GAME_TICK_PERIOD = 1L;
     private static final double BALL_STOP_MOVEMENT_SQUARED = 0.0004;
     private static final int BALL_STOP_CONFIRM_TICKS = 6;
     private static final double PLAYER_FREEZE_EPSILON_SQUARED = 1.0E-6;
@@ -1016,6 +1015,53 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         }
     }
 
+    private void reloadPluginConfig(CommandSender sender) {
+        Map<String, GolfMap> previousMaps = new HashMap<>(maps);
+        Location previousLobby = lobbyLocation == null ? null : lobbyLocation.clone();
+
+        boolean loaded;
+        try {
+            loaded = loadConfig();
+        } catch (Exception ex) {
+            loaded = false;
+            getLogger().log(Level.SEVERE, "Blad podczas przeladowywania config.yml.", ex);
+        }
+
+        if (!loaded) {
+            maps.clear();
+            maps.putAll(previousMaps);
+            lobbyLocation = previousLobby;
+            sender.sendMessage(ChatColor.RED + "Nie udalo sie przeladowac config.yml. Poprzednia konfiguracja pozostaje aktywna.");
+            return;
+        }
+
+        for (GolfSession session : new ArrayList<>(activeSessions.values())) {
+            if (session.player.isOnline()) {
+                session.player.sendMessage(ChatColor.YELLOW + "Konfiguracja minigolfa zostala przeladowana. Biezaca proba zostala zakonczona.");
+            }
+            finishSession(session, false, true, false);
+        }
+
+        for (GolfMap previousMap : previousMaps.values()) {
+            previousMap.release();
+            boolean stillExists = false;
+            for (GolfMap currentMap : maps.values()) {
+                if (currentMap.name.equals(previousMap.name)) {
+                    stillExists = true;
+                    break;
+                }
+            }
+
+            if (!stillExists) {
+                unregisterLegacyObjective("GolfHits_" + previousMap.name);
+                unregisterLegacyObjective("GolfTime_" + previousMap.name);
+            }
+        }
+
+        setupRankingObjectives();
+        sender.sendMessage(ChatColor.GREEN + "LainaGolf: config.yml przeladowany. Zaladowano map: " + maps.size() + ".");
+    }
+
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         boolean allowed = sender instanceof ConsoleCommandSender || sender instanceof Player player && player.isOp();
 
@@ -1024,8 +1070,13 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             return true;
         }
 
+        if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
+            reloadPluginConfig(sender);
+            return true;
+        }
+
         if (args.length != 3 || !args[0].equalsIgnoreCase("join")) {
-            sender.sendMessage(ChatColor.RED + "Uzycie: /minigolf join <mapa> <gracz>");
+            sender.sendMessage(ChatColor.RED + "Uzycie: /minigolf join <mapa> <gracz> lub /minigolf reload");
             return true;
         }
 
@@ -1417,7 +1468,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
                     continue;
                 }
 
-                if (entity instanceof Mob) {
+                if (entity.getPersistentDataContainer().has(golfBallKey, PersistentDataType.BYTE)) {
                     entity.remove();
                     continue;
                 }
