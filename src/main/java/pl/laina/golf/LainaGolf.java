@@ -467,8 +467,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             boolean checkpointRequirementMet = !session.map.checkpointsWinCondition
                     || session.nextCheckpointIndex >= session.map.checkpoints.size();
             boolean finishReached = checkpointRequirementMet
-                    && (session.map.finishRegion.contains(currentBallCenter)
-                    || session.map.finishRegion.intersectsMovement(session.lastBallLocation, currentBallCenter));
+                    && session.map.finishRegion.contains(currentBallCenter);
 
             if (finishReached) {
                 finishSession(session, true, true, true);
