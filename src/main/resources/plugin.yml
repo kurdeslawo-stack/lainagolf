@@ -8,4 +8,4 @@ description: System minigolfa wykorzystujacy naturalna fizyke Sulfur Cube z Mine
 commands:
   minigolf:
     description: Glowna komenda systemu minigolfa.
-    usage: /minigolf join <mapa> <gracz>
+    usage: /minigolf <join <mapa> <gracz>|reload>
