@@ -4,9 +4,11 @@ import io.papermc.paper.event.entity.EntityPushedByEntityAttackEvent;
 import io.papermc.paper.event.player.PrePlayerAttackEntityEvent;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Level;
 import org.bukkit.Bukkit;
@@ -29,10 +31,12 @@ import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Mob;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
 import org.bukkit.entity.SulfurCube;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.player.PlayerBucketEntityEvent;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
@@ -49,6 +53,9 @@ public final class LainaGolf extends JavaPlugin implements Listener {
     private static final long GAME_TICK_PERIOD = 2L;
     private static final double FINISH_DISTANCE_SQUARED = 0.5;
     private static final double MAX_SEGMENT_CHECK_DISTANCE_SQUARED = 16.0;
+    private static final double BALL_STOP_MOVEMENT_SQUARED = 0.0004;
+    private static final int BALL_STOP_CONFIRM_TICKS = 6;
+    private static final double PLAYER_FREEZE_EPSILON_SQUARED = 1.0E-6;
 
     private final Map<String, GolfMap> maps = new HashMap<>();
     private final Map<UUID, GolfSession> activeSessions = new HashMap<>();
@@ -73,6 +80,8 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         getServer().getPluginManager().registerEvents(this, this);
         Objects.requireNonNull(getCommand("minigolf"), "Brak komendy minigolf w plugin.yml").setExecutor(this::onCommand);
         Bukkit.getScheduler().runTaskTimer(this, this::tickGames, 20L, GAME_TICK_PERIOD);
+        Bukkit.getScheduler().runTaskTimer(this, this::tickShotControl, 1L, 1L);
+        Bukkit.getScheduler().runTaskTimer(this, this::protectBusyMaps, 20L, 20L);
         getLogger().info("LainaGolf 3.0 - gotowy.");
     }
 
@@ -239,7 +248,116 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             session.lastBallLocation = currentBallLocation.clone();
         }
 
-        protectBusyMaps();
+    }
+
+    private void tickShotControl() {
+        for (GolfSession session : activeSessions.values()) {
+            if (!session.shotInProgress || session.ending) {
+                continue;
+            }
+
+            Player player = session.player;
+            SulfurCube ball = session.ball;
+            if (!player.isOnline() || !ball.isValid() || ball.isDead()) {
+                continue;
+            }
+
+            freezePlayer(session);
+
+            Location currentBallLocation = ball.getLocation();
+            if (session.lastFlightLocation != null
+                    && session.lastFlightLocation.getWorld() != null
+                    && currentBallLocation.getWorld() != null
+                    && session.lastFlightLocation.getWorld().equals(currentBallLocation.getWorld())
+                    && currentBallLocation.distanceSquared(session.lastFlightLocation) <= BALL_STOP_MOVEMENT_SQUARED) {
+                session.stillTicks++;
+            } else {
+                session.stillTicks = 0;
+            }
+
+            session.lastFlightLocation = currentBallLocation.clone();
+
+            if (session.stillTicks >= BALL_STOP_CONFIRM_TICKS) {
+                stopShot(session);
+            }
+        }
+    }
+
+    private void freezePlayer(GolfSession session) {
+        Location lock = session.frozenPlayerLocation;
+        if (lock == null) {
+            return;
+        }
+
+        Player player = session.player;
+        Location current = player.getLocation();
+
+        if (current.getWorld() != null
+                && lock.getWorld() != null
+                && current.getWorld().equals(lock.getWorld())
+                && current.distanceSquared(lock) <= PLAYER_FREEZE_EPSILON_SQUARED) {
+            if (player.getVelocity().lengthSquared() > 0.0) {
+                player.setVelocity(new Vector(0, 0, 0));
+            }
+            return;
+        }
+
+        Location target = lock.clone();
+        target.setYaw(current.getYaw());
+        target.setPitch(current.getPitch());
+        player.setVelocity(new Vector(0, 0, 0));
+        player.teleport(target);
+    }
+
+    private void beginShot(GolfSession session) {
+        if (!session.shotInProgress) {
+            session.frozenPlayerLocation = session.player.getLocation().clone();
+            session.ball.setVelocity(new Vector(0, 0, 0));
+            session.ball.setAI(true);
+            session.ball.setWander(false);
+            session.shotInProgress = true;
+            session.player.setVelocity(new Vector(0, 0, 0));
+        }
+
+        session.stillTicks = 0;
+        session.lastFlightLocation = session.ball.getLocation().clone();
+    }
+
+    private void stopShot(GolfSession session) {
+        session.ball.setVelocity(new Vector(0, 0, 0));
+        session.ball.setAI(false);
+        session.ball.setWander(false);
+        session.shotInProgress = false;
+        session.stillTicks = 0;
+        session.lastFlightLocation = session.ball.getLocation().clone();
+        session.frozenPlayerLocation = null;
+    }
+
+    private boolean registerStroke(GolfSession session, Player player) {
+        if (session.ending) {
+            return false;
+        }
+
+        if (session.strokes >= session.map.maxStrokes) {
+            session.ending = true;
+            player.sendMessage(ChatColor.RED + "Wykorzystales limit " + session.map.maxStrokes + " uderzen.");
+            Bukkit.getScheduler().runTask(this, () -> finishSession(session, false, true, false));
+            return false;
+        }
+
+        session.strokes++;
+        updateBossBar(session, System.nanoTime());
+        player.sendMessage(ChatColor.GREEN + "Uderzenie " + session.strokes + "/" + session.map.maxStrokes);
+        return true;
+    }
+
+    private Player resolveProjectileOwner(Projectile projectile) {
+        if (projectile.getShooter() instanceof Player player) {
+            return player;
+        }
+
+        UUID ownerId = projectile.getOwnerUniqueId();
+        return ownerId == null ? null : Bukkit.getPlayer(ownerId);
     }
 
     private void updateBossBar(GolfSession session, long now) {
@@ -294,8 +412,14 @@ public final class LainaGolf extends JavaPlugin implements Listener {
     private void resetToStart(GolfSession session) {
         session.ball.teleport(session.map.ballSpawn);
         session.ball.setVelocity(new Vector(0, 0, 0));
+        session.ball.setAI(false);
+        session.ball.setWander(false);
         session.player.teleport(session.map.playerSpawn);
         session.lastBallLocation = session.map.ballSpawn.clone();
+        session.lastFlightLocation = session.map.ballSpawn.clone();
+        session.frozenPlayerLocation = null;
+        session.shotInProgress = false;
+        session.stillTicks = 0;
         session.player.sendMessage(ChatColor.YELLOW + "Pilka wypadla poza plansze. Powrot na start.");
     }
 
@@ -313,22 +437,48 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             return;
         }
 
-        if (session.ending) {
+        if (session.ending || session.shotInProgress) {
             event.setCancelled(true);
             return;
         }
 
-        if (session.strokes >= session.map.maxStrokes) {
+        if (!registerStroke(session, attacker)) {
             event.setCancelled(true);
-            session.ending = true;
-            attacker.sendMessage(ChatColor.RED + "Wykorzystales limit " + session.map.maxStrokes + " uderzen.");
-            Bukkit.getScheduler().runTask(this, () -> finishSession(session, false, true, false));
             return;
         }
 
-        session.strokes++;
-        updateBossBar(session, System.nanoTime());
-        attacker.sendMessage(ChatColor.GREEN + "Uderzenie " + session.strokes + "/" + session.map.maxStrokes);
+        beginShot(session);
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
+    public void onProjectileHit(ProjectileHitEvent event) {
+        Entity hitEntity = event.getHitEntity();
+        if (hitEntity == null) {
+            return;
+        }
+
+        GolfSession session = sessionsByBall.get(hitEntity.getUniqueId());
+        if (session == null || session.ending) {
+            return;
+        }
+
+        Projectile projectile = event.getEntity();
+        Player owner = resolveProjectileOwner(projectile);
+        if (owner == null || !owner.getUniqueId().equals(session.player.getUniqueId())) {
+            event.setCancelled(true);
+            return;
+        }
+
+        if (!session.countedProjectiles.add(projectile.getUniqueId())) {
+            return;
+        }
+
+        if (!registerStroke(session, owner)) {
+            event.setCancelled(true);
+            return;
+        }
+
+        beginShot(session);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -348,13 +498,35 @@ public final class LainaGolf extends JavaPlugin implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBallPushed(EntityPushedByEntityAttackEvent event) {
         GolfSession session = sessionsByBall.get(event.getEntity().getUniqueId());
-        if (session == null) {
+        if (session == null || session.ending) {
             return;
         }
 
-        Entity entity = event.getPushedBy();
-        if (entity instanceof Player player && !player.getUniqueId().equals(session.player.getUniqueId())) {
+        Entity source = event.getPushedBy();
+        Player owner;
+
+        if (source instanceof Player player) {
+            owner = player;
+        } else if (source instanceof Projectile projectile) {
+            owner = resolveProjectileOwner(projectile);
+        } else {
             event.setCancelled(true);
+            return;
+        }
+
+        if (owner == null || !owner.getUniqueId().equals(session.player.getUniqueId())) {
+            event.setCancelled(true);
+            return;
+        }
+
+        if (source instanceof Projectile projectile
+                && session.countedProjectiles.add(projectile.getUniqueId())) {
+            if (!registerStroke(session, owner)) {
+                event.setCancelled(true);
+                return;
+            }
+
+            beginShot(session);
         }
     }
 
@@ -380,6 +552,18 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         }
 
         UUID playerId = event.getPlayer().getUniqueId();
+        GolfSession activeSession = activeSessions.get(playerId);
+        if (event.getCause() == PlayerTeleportEvent.TeleportCause.PLUGIN
+                && activeSession != null
+                && activeSession.shotInProgress
+                && activeSession.frozenPlayerLocation != null
+                && to.getWorld() != null
+                && activeSession.frozenPlayerLocation.getWorld() != null
+                && to.getWorld().equals(activeSession.frozenPlayerLocation.getWorld())
+                && to.distanceSquared(activeSession.frozenPlayerLocation) <= PLAYER_FREEZE_EPSILON_SQUARED) {
+            return;
+        }
+
         for (GolfMap map : maps.values()) {
             if (!map.isBusy || map.busyPlayerId == null || playerId.equals(map.busyPlayerId) || !map.isInside(to)) {
                 continue;
@@ -480,6 +664,8 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         }
 
         session.ending = true;
+        session.shotInProgress = false;
+        session.frozenPlayerLocation = null;
         activeSessions.remove(session.player.getUniqueId(), session);
         sessionsByBall.remove(session.ball.getUniqueId(), session);
         session.bossBar.removeAll();
@@ -512,6 +698,8 @@ public final class LainaGolf extends JavaPlugin implements Listener {
 
         try {
             if (session.ball.isValid()) {
+                session.ball.setVelocity(new Vector(0, 0, 0));
+                session.ball.setAI(false);
                 session.ball.remove();
             }
 
@@ -583,9 +771,14 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         private final long durationNanos;
         private final long deadlineNanos;
         private final BossBar bossBar;
+        private final Set<UUID> countedProjectiles = new HashSet<>();
         private Location lastBallLocation;
+        private Location lastFlightLocation;
+        private Location frozenPlayerLocation;
         private int strokes = 0;
+        private int stillTicks = 0;
         private boolean ending = false;
+        private boolean shotInProgress = false;
 
         private GolfSession(Player player, SulfurCube ball, GolfMap map, GameMode previousGameMode) {
             this.player = player;
@@ -593,6 +786,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             this.map = map;
             this.previousGameMode = previousGameMode;
             this.lastBallLocation = ball.getLocation().clone();
+            this.lastFlightLocation = ball.getLocation().clone();
             this.durationNanos = (long) Math.ceil(map.maxTime * 1.0E9);
             this.deadlineNanos = System.nanoTime() + durationNanos;
             this.bossBar = Bukkit.createBossBar("MINIGOLF", BarColor.GREEN, BarStyle.SOLID);
