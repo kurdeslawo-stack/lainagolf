@@ -242,18 +242,28 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         rankingScoreboard = Bukkit.getScoreboardManager().getMainScoreboard();
 
         for (GolfMap map : maps.values()) {
+            unregisterLegacyObjective("lg_s_" + map.scoreId);
+            unregisterLegacyObjective("lg_t_" + map.scoreId);
+
             map.strokesObjective = getOrCreateObjective(
-                    "lg_s_" + map.scoreId,
+                    "GolfHits_" + map.name,
                     map.name + " - Uderzenia"
             );
             map.timeObjective = getOrCreateObjective(
-                    "lg_t_" + map.scoreId,
+                    "GolfTime_" + map.name,
                     map.name + " - Czas"
             );
 
             clearObjective(map.strokesObjective);
             clearObjective(map.timeObjective);
             populateRankingObjectives(map);
+        }
+    }
+
+    private void unregisterLegacyObjective(String name) {
+        Objective objective = rankingScoreboard.getObjective(name);
+        if (objective != null) {
+            objective.unregister();
         }
     }
 
@@ -437,10 +447,12 @@ public final class LainaGolf extends JavaPlugin implements Listener {
                 continue;
             }
 
+            Location currentBallCenter = getBallCenter(ball);
+
             while (session.nextCheckpointIndex < session.map.checkpoints.size()) {
                 GolfCheckpoint checkpoint = session.map.checkpoints.get(session.nextCheckpointIndex);
-                if (!checkpoint.region.contains(currentBallLocation)
-                        && !checkpoint.region.intersectsMovement(session.lastBallLocation, currentBallLocation)) {
+                if (!checkpoint.region.contains(currentBallCenter)
+                        && !checkpoint.region.intersectsMovement(session.lastBallLocation, currentBallCenter)) {
                     break;
                 }
 
@@ -455,17 +467,22 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             boolean checkpointRequirementMet = !session.map.checkpointsWinCondition
                     || session.nextCheckpointIndex >= session.map.checkpoints.size();
             boolean finishReached = checkpointRequirementMet
-                    && (session.map.finishRegion.contains(currentBallLocation)
-                    || session.map.finishRegion.intersectsMovement(session.lastBallLocation, currentBallLocation));
+                    && (session.map.finishRegion.contains(currentBallCenter)
+                    || session.map.finishRegion.intersectsMovement(session.lastBallLocation, currentBallCenter));
 
             if (finishReached) {
                 finishSession(session, true, true, true);
                 continue;
             }
 
-            session.lastBallLocation = currentBallLocation.clone();
+            session.lastBallLocation = currentBallCenter.clone();
         }
 
+    }
+
+    private static Location getBallCenter(SulfurCube ball) {
+        Vector center = ball.getBoundingBox().getCenter();
+        return new Location(ball.getWorld(), center.getX(), center.getY(), center.getZ());
     }
 
     private void tickShotControl() {
@@ -703,7 +720,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         session.ball.setVelocity(new Vector(0, 0, 0));
         session.ball.setAI(false);
         session.ball.setWander(false);
-        session.lastBallLocation = ballRespawn.clone();
+        session.lastBallLocation = getBallCenter(session.ball);
         session.lastFlightLocation = ballRespawn.clone();
         session.frozenPlayerLocation = null;
         session.shotInProgress = false;
@@ -1073,7 +1090,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             this.ball = ball;
             this.map = map;
             this.previousGameMode = previousGameMode;
-            this.lastBallLocation = ball.getLocation().clone();
+            this.lastBallLocation = getBallCenter(ball);
             this.lastFlightLocation = ball.getLocation().clone();
             this.ballRespawnLocation = map.ballSpawn.clone();
             this.durationNanos = (long) Math.ceil(map.maxTime * 1.0E9);
@@ -1092,6 +1109,10 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         private final BoundingBox box;
 
         private GolfRegion(Location corner1, Location corner2) {
+            this(corner1, corner2, true);
+        }
+
+        private GolfRegion(Location corner1, Location corner2, boolean wholeBlocks) {
             if (!corner1.getWorld().equals(corner2.getWorld())) {
                 throw new IllegalArgumentException("Rogi regionu musza byc w tym samym swiecie.");
             }
@@ -1099,13 +1120,24 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             this.world = corner1.getWorld();
             this.corner1 = corner1.clone();
             this.corner2 = corner2.clone();
-            this.box = BoundingBox.of(corner1.toVector(), corner2.toVector()).expand(BORDER_EPSILON);
+
+            if (wholeBlocks) {
+                double minX = Math.min(corner1.getBlockX(), corner2.getBlockX());
+                double minY = Math.min(corner1.getBlockY(), corner2.getBlockY());
+                double minZ = Math.min(corner1.getBlockZ(), corner2.getBlockZ());
+                double maxX = Math.max(corner1.getBlockX(), corner2.getBlockX()) + 1.0;
+                double maxY = Math.max(corner1.getBlockY(), corner2.getBlockY()) + 1.0;
+                double maxZ = Math.max(corner1.getBlockZ(), corner2.getBlockZ()) + 1.0;
+                this.box = new BoundingBox(minX, minY, minZ, maxX, maxY, maxZ).expand(BORDER_EPSILON);
+            } else {
+                this.box = BoundingBox.of(corner1.toVector(), corner2.toVector()).expand(BORDER_EPSILON);
+            }
         }
 
         private static GolfRegion around(Location center, double radius) {
             Location first = center.clone().add(-radius, -radius, -radius);
             Location second = center.clone().add(radius, radius, radius);
-            return new GolfRegion(first, second);
+            return new GolfRegion(first, second, false);
         }
 
         private boolean contains(Location location) {
