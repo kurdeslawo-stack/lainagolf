@@ -3,13 +3,16 @@ name: LainaGolf reload and hardening
 on:
   issues:
     types: [opened]
+  push:
+    paths:
+      - '.github/workflows/lainagolf-reload-hardening-trigger.txt'
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: github.event.issue.title == 'RUN_LAINAGOLF_RELOAD_HARDENING'
+    if: github.event_name == 'push' || github.event.issue.title == 'RUN_LAINAGOLF_RELOAD_HARDENING'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -145,9 +148,9 @@ jobs:
       - name: Commit changes
         shell: bash
         run: |
-          rm .github/workflows/lainagolf-reload-hardening.yml
+          rm .github/workflows/lainagolf-reload-hardening.yml .github/workflows/lainagolf-reload-hardening-trigger.txt
           git config user.name "LainaGolf Fix Bot"
           git config user.email "actions@github.com"
-          git add src/main/java/pl/laina/golf/LainaGolf.java src/main/resources/plugin.yml .github/workflows/lainagolf-reload-hardening.yml
+          git add src/main/java/pl/laina/golf/LainaGolf.java src/main/resources/plugin.yml .github/workflows/lainagolf-reload-hardening.yml .github/workflows/lainagolf-reload-hardening-trigger.txt
           git commit -m "Add safe minigolf config reload and harden map cleanup"
           git push
