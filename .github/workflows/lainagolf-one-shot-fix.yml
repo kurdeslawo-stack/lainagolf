@@ -1,0 +1,230 @@
+name: LainaGolf one-shot fix
+
+on:
+  push:
+    paths:
+      - '.github/workflows/lainagolf-one-shot-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch LainaGolf
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/main/java/pl/laina/golf/LainaGolf.java')
+          s = p.read_text(encoding='utf-8')
+
+          old = '''        for (GolfMap map : maps.values()) {
+              map.strokesObjective = getOrCreateObjective(
+                      "lg_s_" + map.scoreId,
+                      map.name + " - Uderzenia"
+              );
+              map.timeObjective = getOrCreateObjective(
+                      "lg_t_" + map.scoreId,
+                      map.name + " - Czas"
+              );
+
+              clearObjective(map.strokesObjective);
+              clearObjective(map.timeObjective);
+              populateRankingObjectives(map);
+          }
+          '''
+          new = '''        for (GolfMap map : maps.values()) {
+              unregisterLegacyObjective("lg_s_" + map.scoreId);
+              unregisterLegacyObjective("lg_t_" + map.scoreId);
+
+              map.strokesObjective = getOrCreateObjective(
+                      "GolfHits_" + map.name,
+                      map.name + " - Uderzenia"
+              );
+              map.timeObjective = getOrCreateObjective(
+                      "GolfTime_" + map.name,
+                      map.name + " - Czas"
+              );
+
+              clearObjective(map.strokesObjective);
+              clearObjective(map.timeObjective);
+              populateRankingObjectives(map);
+          }
+          '''
+          assert old in s, 'ranking objective block not found'
+          s = s.replace(old, new, 1)
+
+          old = '''    private Objective getOrCreateObjective(String name, String displayName) {
+          '''
+          new = '''    private void unregisterLegacyObjective(String name) {
+              Objective objective = rankingScoreboard.getObjective(name);
+              if (objective != null) {
+                  objective.unregister();
+              }
+          }
+
+              private Objective getOrCreateObjective(String name, String displayName) {
+          '''
+          assert old in s, 'getOrCreateObjective marker not found'
+          s = s.replace(old, new, 1)
+
+          old = '''            while (session.nextCheckpointIndex < session.map.checkpoints.size()) {
+                  GolfCheckpoint checkpoint = session.map.checkpoints.get(session.nextCheckpointIndex);
+                  if (!checkpoint.region.contains(currentBallLocation)
+                          && !checkpoint.region.intersectsMovement(session.lastBallLocation, currentBallLocation)) {
+                      break;
+                  }
+
+                  session.nextCheckpointIndex++;
+                  session.ballRespawnLocation = checkpoint.ballRespawn.clone();
+                  player.sendMessage(
+                          ChatColor.AQUA + "Checkpoint " + session.nextCheckpointIndex + "/" + session.map.checkpoints.size() + " zaliczony."
+                  );
+                  updateBossBar(session, now);
+              }
+
+              boolean checkpointRequirementMet = !session.map.checkpointsWinCondition
+                      || session.nextCheckpointIndex >= session.map.checkpoints.size();
+              boolean finishReached = checkpointRequirementMet
+                      && (session.map.finishRegion.contains(currentBallLocation)
+                      || session.map.finishRegion.intersectsMovement(session.lastBallLocation, currentBallLocation));
+
+              if (finishReached) {
+                  finishSession(session, true, true, true);
+                  continue;
+              }
+
+              session.lastBallLocation = currentBallLocation.clone();
+          '''
+          new = '''            Location currentBallCenter = getBallCenter(ball);
+
+              while (session.nextCheckpointIndex < session.map.checkpoints.size()) {
+                  GolfCheckpoint checkpoint = session.map.checkpoints.get(session.nextCheckpointIndex);
+                  if (!checkpoint.region.contains(currentBallCenter)
+                          && !checkpoint.region.intersectsMovement(session.lastBallLocation, currentBallCenter)) {
+                      break;
+                  }
+
+                  session.nextCheckpointIndex++;
+                  session.ballRespawnLocation = checkpoint.ballRespawn.clone();
+                  player.sendMessage(
+                          ChatColor.AQUA + "Checkpoint " + session.nextCheckpointIndex + "/" + session.map.checkpoints.size() + " zaliczony."
+                  );
+                  updateBossBar(session, now);
+              }
+
+              boolean checkpointRequirementMet = !session.map.checkpointsWinCondition
+                      || session.nextCheckpointIndex >= session.map.checkpoints.size();
+              boolean finishReached = checkpointRequirementMet
+                      && (session.map.finishRegion.contains(currentBallCenter)
+                      || session.map.finishRegion.intersectsMovement(session.lastBallLocation, currentBallCenter));
+
+              if (finishReached) {
+                  finishSession(session, true, true, true);
+                  continue;
+              }
+
+              session.lastBallLocation = currentBallCenter.clone();
+          '''
+          assert old in s, 'finish/checkpoint detection block not found'
+          s = s.replace(old, new, 1)
+
+          old = '''    private void tickShotControl() {
+          '''
+          new = '''    private static Location getBallCenter(SulfurCube ball) {
+              Vector center = ball.getBoundingBox().getCenter();
+              return new Location(ball.getWorld(), center.getX(), center.getY(), center.getZ());
+          }
+
+              private void tickShotControl() {
+          '''
+          assert old in s, 'tickShotControl marker not found'
+          s = s.replace(old, new, 1)
+
+          old = '''        session.lastBallLocation = ballRespawn.clone();
+              session.lastFlightLocation = ballRespawn.clone();
+          '''
+          new = '''        session.lastBallLocation = getBallCenter(session.ball);
+              session.lastFlightLocation = ballRespawn.clone();
+          '''
+          assert old in s, 'checkpoint reset tracking block not found'
+          s = s.replace(old, new, 1)
+
+          old = '''            this.lastBallLocation = ball.getLocation().clone();
+              this.lastFlightLocation = ball.getLocation().clone();
+          '''
+          new = '''            this.lastBallLocation = getBallCenter(ball);
+              this.lastFlightLocation = ball.getLocation().clone();
+          '''
+          assert old in s, 'session ball tracking block not found'
+          s = s.replace(old, new, 1)
+
+          old = '''        private GolfRegion(Location corner1, Location corner2) {
+              if (!corner1.getWorld().equals(corner2.getWorld())) {
+                  throw new IllegalArgumentException("Rogi regionu musza byc w tym samym swiecie.");
+              }
+
+              this.world = corner1.getWorld();
+              this.corner1 = corner1.clone();
+              this.corner2 = corner2.clone();
+              this.box = BoundingBox.of(corner1.toVector(), corner2.toVector()).expand(BORDER_EPSILON);
+          }
+
+              private static GolfRegion around(Location center, double radius) {
+              Location first = center.clone().add(-radius, -radius, -radius);
+              Location second = center.clone().add(radius, radius, radius);
+              return new GolfRegion(first, second);
+          }
+          '''
+          new = '''        private GolfRegion(Location corner1, Location corner2) {
+              this(corner1, corner2, true);
+          }
+
+              private GolfRegion(Location corner1, Location corner2, boolean wholeBlocks) {
+              if (!corner1.getWorld().equals(corner2.getWorld())) {
+                  throw new IllegalArgumentException("Rogi regionu musza byc w tym samym swiecie.");
+              }
+
+              this.world = corner1.getWorld();
+              this.corner1 = corner1.clone();
+              this.corner2 = corner2.clone();
+
+              if (wholeBlocks) {
+                  double minX = Math.min(corner1.getBlockX(), corner2.getBlockX());
+                  double minY = Math.min(corner1.getBlockY(), corner2.getBlockY());
+                  double minZ = Math.min(corner1.getBlockZ(), corner2.getBlockZ());
+                  double maxX = Math.max(corner1.getBlockX(), corner2.getBlockX()) + 1.0;
+                  double maxY = Math.max(corner1.getBlockY(), corner2.getBlockY()) + 1.0;
+                  double maxZ = Math.max(corner1.getBlockZ(), corner2.getBlockZ()) + 1.0;
+                  this.box = new BoundingBox(minX, minY, minZ, maxX, maxY, maxZ).expand(BORDER_EPSILON);
+              } else {
+                  this.box = BoundingBox.of(corner1.toVector(), corner2.toVector()).expand(BORDER_EPSILON);
+              }
+          }
+
+              private static GolfRegion around(Location center, double radius) {
+              Location first = center.clone().add(-radius, -radius, -radius);
+              Location second = center.clone().add(radius, radius, radius);
+              return new GolfRegion(first, second, false);
+          }
+          '''
+          assert old in s, 'GolfRegion constructor block not found'
+          s = s.replace(old, new, 1)
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          rm .github/workflows/lainagolf-one-shot-fix.yml
+          git config user.name "LainaGolf Fix Bot"
+          git config user.email "actions@github.com"
+          git add src/main/java/pl/laina/golf/LainaGolf.java .github/workflows/lainagolf-one-shot-fix.yml
+          git commit -m "Fix finish block regions and scoreboard objective names"
+          git push
