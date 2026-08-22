@@ -2,9 +2,14 @@ package pl.laina.golf;
 
 import io.papermc.paper.event.entity.EntityPushedByEntityAttackEvent;
 import io.papermc.paper.event.player.PrePlayerAttackEntityEvent;
+import io.papermc.paper.scoreboard.numbers.NumberFormat;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -25,7 +30,9 @@ import org.bukkit.boss.BossBar;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
+import net.kyori.adventure.text.Component;
 import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Item;
@@ -47,12 +54,15 @@ import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scoreboard.Criteria;
+import org.bukkit.scoreboard.Objective;
+import org.bukkit.scoreboard.Score;
+import org.bukkit.scoreboard.Scoreboard;
+import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Vector;
 
 public final class LainaGolf extends JavaPlugin implements Listener {
     private static final long GAME_TICK_PERIOD = 2L;
-    private static final double FINISH_DISTANCE_SQUARED = 0.5;
-    private static final double MAX_SEGMENT_CHECK_DISTANCE_SQUARED = 16.0;
     private static final double BALL_STOP_MOVEMENT_SQUARED = 0.0004;
     private static final int BALL_STOP_CONFIRM_TICKS = 6;
     private static final double PLAYER_FREEZE_EPSILON_SQUARED = 1.0E-6;
@@ -64,6 +74,9 @@ public final class LainaGolf extends JavaPlugin implements Listener {
     private Location lobbyLocation;
     private NamespacedKey golfBallKey;
     private NamespacedKey golfFeedItemKey;
+    private File scoresFile;
+    private YamlConfiguration scoresConfig;
+    private Scoreboard rankingScoreboard;
 
     @Override
     public void onEnable() {
@@ -76,6 +89,9 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
+
+        loadScores();
+        setupRankingObjectives();
 
         getServer().getPluginManager().registerEvents(this, this);
         Objects.requireNonNull(getCommand("minigolf"), "Brak komendy minigolf w plugin.yml").setExecutor(this::onCommand);
@@ -97,6 +113,8 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         for (GolfMap map : maps.values()) {
             map.release();
         }
+
+        saveScores();
     }
 
     private boolean loadConfig() {
@@ -196,6 +214,185 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         return new Location(world, x, y, z, (float) yaw, (float) pitch);
     }
 
+    private void loadScores() {
+        if (!getDataFolder().exists() && !getDataFolder().mkdirs()) {
+            getLogger().warning("Nie udalo sie utworzyc folderu danych pluginu.");
+        }
+
+        scoresFile = new File(getDataFolder(), "scores.yml");
+        scoresConfig = YamlConfiguration.loadConfiguration(scoresFile);
+    }
+
+    private void saveScores() {
+        if (scoresFile == null || scoresConfig == null) {
+            return;
+        }
+
+        try {
+            scoresConfig.save(scoresFile);
+        } catch (IOException ex) {
+            getLogger().log(Level.SEVERE, "Nie udalo sie zapisac scores.yml.", ex);
+        }
+    }
+
+    private void setupRankingObjectives() {
+        rankingScoreboard = Bukkit.getScoreboardManager().getMainScoreboard();
+
+        for (GolfMap map : maps.values()) {
+            map.strokesObjective = getOrCreateObjective(
+                    "lg_s_" + map.scoreId,
+                    map.name + " - Uderzenia"
+            );
+            map.timeObjective = getOrCreateObjective(
+                    "lg_t_" + map.scoreId,
+                    map.name + " - Czas"
+            );
+
+            clearObjective(map.strokesObjective);
+            clearObjective(map.timeObjective);
+            populateRankingObjectives(map);
+        }
+    }
+
+    private Objective getOrCreateObjective(String name, String displayName) {
+        Objective objective = rankingScoreboard.getObjective(name);
+        if (objective != null) {
+            objective.displayName(Component.text(displayName));
+            return objective;
+        }
+
+        return rankingScoreboard.registerNewObjective(name, Criteria.DUMMY, Component.text(displayName));
+    }
+
+    private void clearObjective(Objective objective) {
+        for (String entry : new HashSet<>(rankingScoreboard.getEntries())) {
+            Score score = objective.getScore(entry);
+            if (score.isScoreSet()) {
+                score.resetScore();
+            }
+        }
+    }
+
+    private void populateRankingObjectives(GolfMap map) {
+        ConfigurationSection players = scoresConfig.getConfigurationSection("maps." + map.scoreId + ".players");
+        if (players == null) {
+            return;
+        }
+
+        for (String playerId : players.getKeys(false)) {
+            String base = "maps." + map.scoreId + ".players." + playerId;
+            String name = scoresConfig.getString(base + ".name");
+            if (name == null || name.isBlank()) {
+                continue;
+            }
+
+            int bestStrokes = scoresConfig.getInt(base + ".bestStrokes", -1);
+            long bestTimeMillis = scoresConfig.getLong(base + ".bestTimeMillis", -1L);
+
+            if (bestStrokes > 0) {
+                updateRankingScore(map.strokesObjective, playerId, name, bestStrokes, Integer.toString(bestStrokes));
+            }
+
+            if (bestTimeMillis >= 0L) {
+                updateRankingScore(
+                        map.timeObjective,
+                        playerId,
+                        name,
+                        clampRankingMetric(bestTimeMillis),
+                        formatElapsedMillis(bestTimeMillis)
+                );
+            }
+        }
+    }
+
+    private int clampRankingMetric(long value) {
+        return (int) Math.max(0L, Math.min((long) Integer.MAX_VALUE - 1L, value));
+    }
+
+    private void updateRankingScore(Objective objective, String entryId, String playerName, int metric, String displayValue) {
+        int rankingValue = Integer.MAX_VALUE - Math.max(0, metric);
+        Score score = objective.getScore(entryId);
+        score.setScore(rankingValue);
+        score.customName(Component.text(playerName));
+        score.numberFormat(NumberFormat.fixed(Component.text(displayValue)));
+    }
+
+    private void recordResult(GolfSession session, long elapsedMillis) {
+        GolfMap map = session.map;
+        Player player = session.player;
+        String playerId = player.getUniqueId().toString();
+        String base = "maps." + map.scoreId + ".players." + playerId;
+        String previousName = scoresConfig.getString(base + ".name");
+        int previousStrokes = scoresConfig.getInt(base + ".bestStrokes", Integer.MAX_VALUE);
+        long previousTime = scoresConfig.getLong(base + ".bestTimeMillis", Long.MAX_VALUE);
+        boolean nameChanged = previousName == null || !previousName.equals(player.getName());
+        boolean strokesImproved = session.strokes < previousStrokes;
+        boolean timeImproved = elapsedMillis < previousTime;
+
+        scoresConfig.set("maps." + map.scoreId + ".name", map.name);
+        scoresConfig.set(base + ".name", player.getName());
+
+        if (strokesImproved) {
+            scoresConfig.set(base + ".bestStrokes", session.strokes);
+            previousStrokes = session.strokes;
+        }
+
+        if (timeImproved) {
+            scoresConfig.set(base + ".bestTimeMillis", elapsedMillis);
+            previousTime = elapsedMillis;
+        }
+
+        if (previousStrokes != Integer.MAX_VALUE) {
+            updateRankingScore(
+                    map.strokesObjective,
+                    playerId,
+                    player.getName(),
+                    previousStrokes,
+                    Integer.toString(previousStrokes)
+            );
+        }
+
+        if (previousTime != Long.MAX_VALUE) {
+            updateRankingScore(
+                    map.timeObjective,
+                    playerId,
+                    player.getName(),
+                    clampRankingMetric(previousTime),
+                    formatElapsedMillis(previousTime)
+            );
+        }
+
+        if (strokesImproved || timeImproved || nameChanged) {
+            saveScores();
+        }
+
+        player.sendMessage(
+                ChatColor.YELLOW + "Wynik: " + ChatColor.WHITE + session.strokes + " uderzen"
+                        + ChatColor.GRAY + " | " + ChatColor.WHITE + formatElapsedMillis(elapsedMillis)
+        );
+
+        if (strokesImproved) {
+            player.sendMessage(ChatColor.GREEN + "Nowy rekord uderzen na tej planszy!");
+        }
+
+        if (timeImproved) {
+            player.sendMessage(ChatColor.GREEN + "Nowy rekord czasu na tej planszy!");
+        }
+    }
+
+    private String formatElapsedMillis(long millis) {
+        long safeMillis = Math.max(0L, millis);
+        long minutes = safeMillis / 60_000L;
+        long seconds = (safeMillis % 60_000L) / 1_000L;
+        long milliseconds = safeMillis % 1_000L;
+        return String.format(Locale.ROOT, "%02d:%02d.%03d", minutes, seconds, milliseconds);
+    }
+
+    private static String stableMapId(String name) {
+        UUID uuid = UUID.nameUUIDFromBytes(("lainagolf:" + name.toLowerCase(Locale.ROOT)).getBytes(StandardCharsets.UTF_8));
+        return uuid.toString().replace("-", "").substring(0, 12);
+    }
+
     private void tickGames() {
         long now = System.nanoTime();
 
@@ -233,12 +430,29 @@ public final class LainaGolf extends JavaPlugin implements Listener {
 
             Location currentBallLocation = ball.getLocation();
             if (!session.map.isInside(currentBallLocation)) {
-                resetToStart(session);
+                resetToCheckpoint(session);
                 continue;
             }
 
-            boolean finishReached = session.map.isAtFinish(currentBallLocation)
-                    || session.map.segmentHitsFinish(session.lastBallLocation, currentBallLocation);
+            while (session.nextCheckpointIndex < session.map.checkpoints.size()) {
+                GolfCheckpoint checkpoint = session.map.checkpoints.get(session.nextCheckpointIndex);
+                if (!checkpoint.region.contains(currentBallLocation)
+                        && !checkpoint.region.intersectsMovement(session.lastBallLocation, currentBallLocation)) {
+                    break;
+                }
+
+                session.nextCheckpointIndex++;
+                session.ballRespawnLocation = checkpoint.ballRespawn.clone();
+                player.sendMessage(
+                        ChatColor.AQUA + "Checkpoint " + session.nextCheckpointIndex + "/" + session.map.checkpoints.size() + " zaliczony."
+                );
+                updateBossBar(session, now);
+            }
+
+            boolean allCheckpointsReached = session.nextCheckpointIndex >= session.map.checkpoints.size();
+            boolean finishReached = allCheckpointsReached
+                    && (session.map.finishRegion.contains(currentBallLocation)
+                    || session.map.finishRegion.intersectsMovement(session.lastBallLocation, currentBallLocation));
 
             if (finishReached) {
                 finishSession(session, true, true, true);
@@ -369,8 +583,12 @@ public final class LainaGolf extends JavaPlugin implements Listener {
 
         long remainingSeconds = (long) Math.ceil(remainingNanos / 1_000_000_000.0);
         session.bossBar.setProgress(progress);
+        String checkpointText = session.map.checkpoints.isEmpty()
+                ? ""
+                : " | CP: " + session.nextCheckpointIndex + "/" + session.map.checkpoints.size();
         session.bossBar.setTitle(
-                "MINIGOLF | Czas: " + formatClock(remainingSeconds)
+                "MINIGOLF" + checkpointText
+                        + " | Czas: " + formatClock(remainingSeconds)
                         + " | Uderzenia: " + session.strokes + "/" + session.map.maxStrokes
         );
 
@@ -409,18 +627,21 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         }
     }
 
-    private void resetToStart(GolfSession session) {
-        session.ball.teleport(session.map.ballSpawn);
+    private void resetToCheckpoint(GolfSession session) {
+        Location ballRespawn = session.ballRespawnLocation.clone();
+        session.ball.teleport(ballRespawn);
         session.ball.setVelocity(new Vector(0, 0, 0));
         session.ball.setAI(false);
         session.ball.setWander(false);
-        session.player.teleport(session.map.playerSpawn);
-        session.lastBallLocation = session.map.ballSpawn.clone();
-        session.lastFlightLocation = session.map.ballSpawn.clone();
+        session.lastBallLocation = ballRespawn.clone();
+        session.lastFlightLocation = ballRespawn.clone();
         session.frozenPlayerLocation = null;
         session.shotInProgress = false;
         session.stillTicks = 0;
-        session.player.sendMessage(ChatColor.YELLOW + "Pilka wypadla poza plansze. Powrot na start.");
+        String message = session.nextCheckpointIndex == 0
+                ? "Pilka wypadla poza plansze. Powrot na start."
+                : "Pilka wypadla poza plansze. Powrot do checkpointu " + session.nextCheckpointIndex + ".";
+        session.player.sendMessage(ChatColor.YELLOW + message);
     }
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
@@ -672,6 +893,9 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         Player player = session.player;
 
         if (win) {
+            long elapsedMillis = Math.max(0L, (System.nanoTime() - session.startNanos) / 1_000_000L);
+            recordResult(session, elapsedMillis);
+
             String consoleCommand = session.map.winCommand
                     .replace("{PLAYER}", player.getName())
                     .replace("{LEVEL}", session.map.name);
@@ -769,14 +993,17 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         private final GolfMap map;
         private final GameMode previousGameMode;
         private final long durationNanos;
+        private final long startNanos;
         private final long deadlineNanos;
         private final BossBar bossBar;
         private final Set<UUID> countedProjectiles = new HashSet<>();
         private Location lastBallLocation;
         private Location lastFlightLocation;
         private Location frozenPlayerLocation;
+        private Location ballRespawnLocation;
         private int strokes = 0;
         private int stillTicks = 0;
+        private int nextCheckpointIndex = 0;
         private boolean ending = false;
         private boolean shotInProgress = false;
 
@@ -787,26 +1014,97 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             this.previousGameMode = previousGameMode;
             this.lastBallLocation = ball.getLocation().clone();
             this.lastFlightLocation = ball.getLocation().clone();
+            this.ballRespawnLocation = map.ballSpawn.clone();
             this.durationNanos = (long) Math.ceil(map.maxTime * 1.0E9);
-            this.deadlineNanos = System.nanoTime() + durationNanos;
+            this.startNanos = System.nanoTime();
+            this.deadlineNanos = startNanos + durationNanos;
             this.bossBar = Bukkit.createBossBar("MINIGOLF", BarColor.GREEN, BarStyle.SOLID);
+        }
+    }
+
+    private static final class GolfRegion {
+        private static final double BORDER_EPSILON = 1.0E-7;
+
+        private final World world;
+        private final Location corner1;
+        private final Location corner2;
+        private final BoundingBox box;
+
+        private GolfRegion(Location corner1, Location corner2) {
+            if (!corner1.getWorld().equals(corner2.getWorld())) {
+                throw new IllegalArgumentException("Rogi regionu musza byc w tym samym swiecie.");
+            }
+
+            this.world = corner1.getWorld();
+            this.corner1 = corner1.clone();
+            this.corner2 = corner2.clone();
+            this.box = BoundingBox.of(corner1.toVector(), corner2.toVector()).expand(BORDER_EPSILON);
+        }
+
+        private static GolfRegion around(Location center, double radius) {
+            Location first = center.clone().add(-radius, -radius, -radius);
+            Location second = center.clone().add(radius, radius, radius);
+            return new GolfRegion(first, second);
+        }
+
+        private boolean contains(Location location) {
+            return location.getWorld() != null
+                    && location.getWorld().equals(world)
+                    && box.contains(location.getX(), location.getY(), location.getZ());
+        }
+
+        private boolean intersectsMovement(Location from, Location to) {
+            if (from == null
+                    || from.getWorld() == null
+                    || to.getWorld() == null
+                    || !from.getWorld().equals(world)
+                    || !to.getWorld().equals(world)) {
+                return false;
+            }
+
+            if (contains(from) || contains(to)) {
+                return true;
+            }
+
+            Vector direction = to.toVector().subtract(from.toVector());
+            double distance = direction.length();
+            if (distance <= 1.0E-9) {
+                return false;
+            }
+
+            direction.multiply(1.0 / distance);
+            return box.rayTrace(from.toVector(), direction, distance) != null;
+        }
+    }
+
+    private static final class GolfCheckpoint {
+        private final GolfRegion region;
+        private final Location ballRespawn;
+
+        private GolfCheckpoint(GolfRegion region, Location ballRespawn) {
+            this.region = region;
+            this.ballRespawn = ballRespawn;
         }
     }
 
     private final class GolfMap {
         private final String name;
+        private final String scoreId;
         private final String winCommand;
         private final Location corner1;
         private final Location corner2;
         private final Location playerSpawn;
         private final Location ballSpawn;
-        private final Location finishLoc;
+        private final GolfRegion finishRegion;
+        private final List<GolfCheckpoint> checkpoints;
         private final double maxTime;
         private final int maxStrokes;
         private final Material blockMaterial;
         private boolean isBusy;
         private UUID busyPlayerId;
         private SulfurCube ballEntity;
+        private Objective strokesObjective;
+        private Objective timeObjective;
 
         private GolfMap(String name, ConfigurationSection cfg) {
             isBusy = false;
@@ -816,11 +1114,13 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             }
 
             this.name = name;
+            this.scoreId = stableMapId(name);
             corner1 = requireLocation(cfg, "corner1");
             corner2 = requireLocation(cfg, "corner2");
             playerSpawn = requireLocation(cfg, "playerSpawn");
             ballSpawn = requireLocation(cfg, "ballSpawn");
-            finishLoc = requireLocation(cfg, "finishLoc");
+            finishRegion = loadFinishRegion(cfg);
+            checkpoints = loadCheckpoints(cfg);
             ensureSameWorld();
 
             if (!isInside(playerSpawn)) {
@@ -831,8 +1131,18 @@ public final class LainaGolf extends JavaPlugin implements Listener {
                 throw new IllegalArgumentException("ballSpawn lezy poza granicami mapy.");
             }
 
-            if (!isInside(finishLoc)) {
-                throw new IllegalArgumentException("finishLoc lezy poza granicami mapy.");
+            if (!isInside(finishRegion.corner1) || !isInside(finishRegion.corner2)) {
+                throw new IllegalArgumentException("Region mety lezy poza granicami mapy.");
+            }
+
+            for (int i = 0; i < checkpoints.size(); i++) {
+                GolfCheckpoint checkpoint = checkpoints.get(i);
+                if (!isInside(checkpoint.region.corner1) || !isInside(checkpoint.region.corner2)) {
+                    throw new IllegalArgumentException("Region checkpointu " + (i + 1) + " lezy poza granicami mapy.");
+                }
+                if (!isInside(checkpoint.ballRespawn)) {
+                    throw new IllegalArgumentException("ballRespawn checkpointu " + (i + 1) + " lezy poza granicami mapy.");
+                }
             }
 
             winCommand = Objects.requireNonNullElse(cfg.getString("winCommand"), "").trim();
@@ -865,6 +1175,68 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             blockMaterial = material;
         }
 
+        private GolfRegion loadFinishRegion(ConfigurationSection cfg) {
+            ConfigurationSection finishCfg = cfg.getConfigurationSection("finish");
+            if (finishCfg != null) {
+                return new GolfRegion(
+                        requireLocation(finishCfg, "corner1"),
+                        requireLocation(finishCfg, "corner2")
+                );
+            }
+
+            Location legacyFinish = LainaGolf.this.parseLocation(cfg.getConfigurationSection("finishLoc"));
+            if (legacyFinish == null) {
+                throw new IllegalArgumentException("Brak regionu mety 'finish.corner1' i 'finish.corner2'.");
+            }
+
+            getLogger().warning("Mapa '" + name + "' uzywa starego finishLoc. Ustaw region finish z corner1 i corner2.");
+            return GolfRegion.around(legacyFinish, Math.sqrt(0.5));
+        }
+
+        private List<GolfCheckpoint> loadCheckpoints(ConfigurationSection cfg) {
+            ConfigurationSection section = cfg.getConfigurationSection("checkpoints");
+            if (section == null || section.getKeys(false).isEmpty()) {
+                return List.of();
+            }
+
+            ArrayList<Integer> ids = new ArrayList<>();
+            for (String key : section.getKeys(false)) {
+                try {
+                    int id = Integer.parseInt(key);
+                    if (id <= 0) {
+                        throw new NumberFormatException();
+                    }
+                    ids.add(id);
+                } catch (NumberFormatException ex) {
+                    throw new IllegalArgumentException("Checkpoint '" + key + "' musi miec numer 1, 2, 3...");
+                }
+            }
+
+            ids.sort(Integer::compareTo);
+            for (int i = 0; i < ids.size(); i++) {
+                if (ids.get(i) != i + 1) {
+                    throw new IllegalArgumentException("Checkpointy musza miec kolejne numery od 1 bez przerw.");
+                }
+            }
+
+            ArrayList<GolfCheckpoint> loaded = new ArrayList<>();
+            for (int id : ids) {
+                ConfigurationSection checkpointCfg = section.getConfigurationSection(Integer.toString(id));
+                if (checkpointCfg == null) {
+                    throw new IllegalArgumentException("Checkpoint " + id + " nie jest poprawna sekcja YAML.");
+                }
+
+                GolfRegion region = new GolfRegion(
+                        requireLocation(checkpointCfg, "corner1"),
+                        requireLocation(checkpointCfg, "corner2")
+                );
+                Location checkpointBallSpawn = requireLocation(checkpointCfg, "ballRespawn");
+                loaded.add(new GolfCheckpoint(region, checkpointBallSpawn));
+            }
+
+            return List.copyOf(loaded);
+        }
+
         private Location requireLocation(ConfigurationSection cfg, String key) {
             Location location = LainaGolf.this.parseLocation(cfg.getConfigurationSection(key));
             if (location == null) {
@@ -878,8 +1250,15 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             if (!corner2.getWorld().equals(world)
                     || !playerSpawn.getWorld().equals(world)
                     || !ballSpawn.getWorld().equals(world)
-                    || !finishLoc.getWorld().equals(world)) {
+                    || !finishRegion.world.equals(world)) {
                 throw new IllegalArgumentException("Wszystkie lokacje danej mapy musza byc w tym samym swiecie.");
+            }
+
+            for (GolfCheckpoint checkpoint : checkpoints) {
+                if (!checkpoint.region.world.equals(world)
+                        || !checkpoint.ballRespawn.getWorld().equals(world)) {
+                    throw new IllegalArgumentException("Wszystkie checkpointy musza byc w tym samym swiecie co mapa.");
+                }
             }
         }
 
@@ -891,41 +1270,6 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             return location.getX() >= minX() && location.getX() <= maxX()
                     && location.getY() >= minY() && location.getY() <= maxY()
                     && location.getZ() >= minZ() && location.getZ() <= maxZ();
-        }
-
-        private boolean isAtFinish(Location ballLocation) {
-            return ballLocation.getWorld() != null
-                    && ballLocation.getWorld().equals(finishLoc.getWorld())
-                    && ballLocation.distanceSquared(finishLoc) < FINISH_DISTANCE_SQUARED;
-        }
-
-        private boolean segmentHitsFinish(Location from, Location to) {
-            if (from == null
-                    || from.getWorld() == null
-                    || to.getWorld() == null
-                    || !from.getWorld().equals(to.getWorld())
-                    || !to.getWorld().equals(finishLoc.getWorld())) {
-                return false;
-            }
-
-            if (from.distanceSquared(to) > MAX_SEGMENT_CHECK_DISTANCE_SQUARED) {
-                return false;
-            }
-
-            Vector a = from.toVector();
-            Vector b = to.toVector();
-            Vector p = finishLoc.toVector();
-            Vector ab = b.clone().subtract(a);
-            double lengthSquared = ab.lengthSquared();
-
-            if (lengthSquared < 1.0E-9) {
-                return false;
-            }
-
-            double t = p.clone().subtract(a).dot(ab) / lengthSquared;
-            t = Math.max(0.0, Math.min(1.0, t));
-            Vector closest = a.clone().add(ab.multiply(t));
-            return closest.distanceSquared(p) < FINISH_DISTANCE_SQUARED;
         }
 
         private boolean overlaps(GolfMap other) {
