@@ -14,6 +14,12 @@ maps:
     playerSpawn: {world: world_adventure, x: 1005.5, y: 64.0, z: 1050.5, yaw: 0.0, pitch: 0.0}
     ballSpawn: {world: world_adventure, x: 1008.5, y: 64.0, z: 1050.5}
 
+    # Parametry fizyczne pilki. ball_scale: 0.5 oznacza pilke 2x mniejsza.
+    ball_scale: 1.0
+    ball_bounciness: 0.0
+    ball_friction_modifier: 1.0
+    ball_knockback_resistance: 0.0
+
     checkpointsWinCondition: true
 
     checkpoints:
