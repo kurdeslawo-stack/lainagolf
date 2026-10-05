@@ -34,3 +34,7 @@ maps:
     maxTime: 180.0
     maxStrokes: 15
     block: "STONE"
+
+    cooldown:
+      seconds: 3600
+      start: EXIT
