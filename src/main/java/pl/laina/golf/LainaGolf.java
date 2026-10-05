@@ -6,6 +6,7 @@ import io.papermc.paper.scoreboard.numbers.NumberFormat;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -79,12 +80,24 @@ public final class LainaGolf extends JavaPlugin implements Listener {
     private File scoresFile;
     private YamlConfiguration scoresConfig;
     private Scoreboard rankingScoreboard;
+    private CooldownService cooldowns;
 
     @Override
     public void onEnable() {
         golfBallKey = new NamespacedKey(this, "golf_ball");
         golfFeedItemKey = new NamespacedKey(this, "golf_feed_item");
         saveDefaultConfig();
+
+        try {
+            cooldowns = new CooldownService(
+                    getDataFolder().toPath().resolve("cooldowns.properties"),
+                    Clock.systemUTC()
+            );
+        } catch (IOException ex) {
+            getLogger().log(Level.SEVERE, "Nie mozna wczytac cooldownow minigolfa.", ex);
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
 
         if (!loadConfig()) {
             getLogger().severe("LainaGolf zostaje wylaczony przez bledna konfiguracje.");
@@ -944,6 +957,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         map.ballEntity = ball;
         session.bossBar.addPlayer(player);
         updateBossBar(session, System.nanoTime());
+        startCooldown(player.getUniqueId(), map, CooldownStart.ENTRY);
 
         player.sendMessage(ChatColor.GREEN + "Zaczynasz " + map.name + "! Masz " + map.maxStrokes + " uderzen i " + formatSeconds(map.maxTime) + " sekund.");
     }
@@ -961,6 +975,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         }
 
         session.ending = true;
+        startCooldown(session.player.getUniqueId(), session.map, CooldownStart.EXIT);
         session.shotInProgress = false;
         session.frozenPlayerLocation = null;
         activeSessions.remove(session.player.getUniqueId(), session);
@@ -1097,6 +1112,23 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             return true;
         }
 
+        long remainingCooldown = 0L;
+        if (map.cooldownSeconds == 0L) {
+            clearCooldown(target.getUniqueId(), map);
+        } else {
+            remainingCooldown = cooldowns.remainingSeconds(target.getUniqueId(), map.name);
+        }
+        if (remainingCooldown > 0L) {
+            String cooldownMessage = ChatColor.RED
+                    + "Możesz ponownie zagrać na tej planszy za "
+                    + CooldownService.formatRemaining(remainingCooldown);
+            target.sendMessage(cooldownMessage);
+            if (!sender.equals(target)) {
+                sender.sendMessage(cooldownMessage);
+            }
+            return true;
+        }
+
         if (map.isBusy) {
             String busyMessage = ChatColor.RED + "Ta plansza minigolfa jest obecnie zajeta.";
             sender.sendMessage(busyMessage);
@@ -1113,6 +1145,30 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         }
 
         return true;
+    }
+
+    private void startCooldown(UUID playerId, GolfMap map, CooldownStart event) {
+        try {
+            cooldowns.start(playerId, map.name, map.cooldownSeconds, map.cooldownStart, event);
+        } catch (IOException ex) {
+            getLogger().log(
+                    Level.SEVERE,
+                    "Nie mozna zapisac cooldownu gracza " + playerId + " dla mapy '" + map.name + "'.",
+                    ex
+            );
+        }
+    }
+
+    private void clearCooldown(UUID playerId, GolfMap map) {
+        try {
+            cooldowns.clear(playerId, map.name);
+        } catch (IOException ex) {
+            getLogger().log(
+                    Level.SEVERE,
+                    "Nie mozna usunac cooldownu gracza " + playerId + " dla mapy '" + map.name + "'.",
+                    ex
+            );
+        }
     }
 
     private static final class GolfSession {
@@ -1244,6 +1300,8 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         private final double maxTime;
         private final int maxStrokes;
         private final Material blockMaterial;
+        private final long cooldownSeconds;
+        private final CooldownStart cooldownStart;
         private boolean isBusy;
         private UUID busyPlayerId;
         private SulfurCube ballEntity;
@@ -1304,6 +1362,25 @@ public final class LainaGolf extends JavaPlugin implements Listener {
 
             if (maxStrokes <= 0) {
                 throw new IllegalArgumentException("maxStrokes musi byc > 0.");
+            }
+
+            if (!cfg.isInt("cooldown.seconds") && !cfg.isLong("cooldown.seconds")) {
+                throw new IllegalArgumentException("cooldown.seconds musi byc liczba calkowita >= 0.");
+            }
+
+            cooldownSeconds = cfg.getLong("cooldown.seconds");
+            if (cooldownSeconds < 0L) {
+                throw new IllegalArgumentException("cooldown.seconds musi byc >= 0.");
+            }
+
+            String cooldownStartName = Objects.requireNonNullElse(
+                    cfg.getString("cooldown.start"),
+                    ""
+            ).trim().toUpperCase(Locale.ROOT);
+            try {
+                cooldownStart = CooldownStart.valueOf(cooldownStartName);
+            } catch (IllegalArgumentException ex) {
+                throw new IllegalArgumentException("cooldown.start musi miec wartosc ENTRY albo EXIT.");
             }
 
             String blockName = Objects.requireNonNullElse(cfg.getString("block"), "").trim();
