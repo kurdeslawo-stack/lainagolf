@@ -149,6 +149,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             return false;
         }
 
+        boolean configUpdated = false;
         for (String key : mapsSection.getKeys(false)) {
             ConfigurationSection cfg = mapsSection.getConfigurationSection(key);
             if (cfg == null) {
@@ -158,6 +159,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             }
 
             try {
+                configUpdated |= CooldownConfig.addMissingDefaults(cfg);
                 String lookupKey = key.toLowerCase(Locale.ROOT);
                 if (maps.containsKey(lookupKey)) {
                     throw new IllegalArgumentException("Nazwa mapy duplikuje inna nazwe po pominieciu wielkosci liter.");
@@ -166,6 +168,19 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             } catch (IllegalArgumentException ex) {
                 getLogger().log(Level.SEVERE, "Nie mozna zaladowac mapy '" + key + "': " + ex.getMessage());
                 valid = false;
+            }
+        }
+
+        if (configUpdated) {
+            try {
+                saveConfig();
+                getLogger().info("Dopisano domyslne ustawienia cooldown do starszych map w config.yml.");
+            } catch (Exception ex) {
+                getLogger().log(
+                        Level.WARNING,
+                        "Nie udalo sie zapisac domyslnych ustawien cooldown do config.yml. Plugin uzyje ich w pamieci.",
+                        ex
+                );
             }
         }
 
@@ -1364,24 +1379,9 @@ public final class LainaGolf extends JavaPlugin implements Listener {
                 throw new IllegalArgumentException("maxStrokes musi byc > 0.");
             }
 
-            if (!cfg.isInt("cooldown.seconds") && !cfg.isLong("cooldown.seconds")) {
-                throw new IllegalArgumentException("cooldown.seconds musi byc liczba calkowita >= 0.");
-            }
-
-            cooldownSeconds = cfg.getLong("cooldown.seconds");
-            if (cooldownSeconds < 0L) {
-                throw new IllegalArgumentException("cooldown.seconds musi byc >= 0.");
-            }
-
-            String cooldownStartName = Objects.requireNonNullElse(
-                    cfg.getString("cooldown.start"),
-                    ""
-            ).trim().toUpperCase(Locale.ROOT);
-            try {
-                cooldownStart = CooldownStart.valueOf(cooldownStartName);
-            } catch (IllegalArgumentException ex) {
-                throw new IllegalArgumentException("cooldown.start musi miec wartosc ENTRY albo EXIT.");
-            }
+            CooldownConfig.Settings cooldown = CooldownConfig.read(cfg);
+            cooldownSeconds = cooldown.seconds();
+            cooldownStart = cooldown.start();
 
             String blockName = Objects.requireNonNullElse(cfg.getString("block"), "").trim();
             Material material = Material.matchMaterial(blockName);
