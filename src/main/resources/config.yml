@@ -35,6 +35,9 @@ maps:
     maxStrokes: 15
     block: "STONE"
 
+    # Cooldown jest liczony osobno dla kazdego gracza i dla kazdej planszy.
+    # seconds: czas blokady w sekundach; 0 calkowicie wylacza cooldown.
+    # start: ENTRY liczy czas od wejscia, EXIT od zakonczenia lub opuszczenia gry.
     cooldown:
       seconds: 3600
       start: EXIT
