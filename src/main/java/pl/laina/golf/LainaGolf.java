@@ -25,6 +25,8 @@ import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Tag;
 import org.bukkit.World;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.boss.BarColor;
 import org.bukkit.boss.BarStyle;
 import org.bukkit.boss.BossBar;
@@ -895,6 +897,21 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         return sessionsByBall.containsKey(entityId);
     }
 
+    private void applyConfiguredBallAttributes(SulfurCube ball, GolfMap map) {
+        applyBallAttribute(ball, Attribute.SCALE, map.ballScale, "ball_scale");
+        applyBallAttribute(ball, Attribute.BOUNCINESS, map.ballBounciness, "ball_bounciness");
+        applyBallAttribute(ball, Attribute.FRICTION_MODIFIER, map.ballFrictionModifier, "ball_friction_modifier");
+        applyBallAttribute(ball, Attribute.KNOCKBACK_RESISTANCE, map.ballKnockbackResistance, "ball_knockback_resistance");
+    }
+
+    private void applyBallAttribute(SulfurCube ball, Attribute attribute, double value, String configKey) {
+        AttributeInstance instance = ball.getAttribute(attribute);
+        if (instance == null) {
+            throw new IllegalStateException("Sulfur Cube nie obsluguje atrybutu " + configKey + ".");
+        }
+        instance.setBaseValue(value);
+    }
+
     private void prepareAndStartLevel(Player player, GolfMap map) {
         map.cleanup();
         map.isBusy = true;
@@ -911,6 +928,7 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             ball.getEquipment().setDropChance(EquipmentSlot.BODY, 0.0F);
             ball.setAI(false);
             ball.setWander(false);
+            applyConfiguredBallAttributes(ball, map);
             ball.setVelocity(new Vector(0, 0, 0));
             ball.getPersistentDataContainer().set(golfBallKey, PersistentDataType.BYTE, (byte) 1);
             startSession(player, map, ball);
@@ -1244,6 +1262,10 @@ public final class LainaGolf extends JavaPlugin implements Listener {
         private final double maxTime;
         private final int maxStrokes;
         private final Material blockMaterial;
+        private final double ballScale;
+        private final double ballBounciness;
+        private final double ballFrictionModifier;
+        private final double ballKnockbackResistance;
         private boolean isBusy;
         private UUID busyPlayerId;
         private SulfurCube ballEntity;
@@ -1306,6 +1328,11 @@ public final class LainaGolf extends JavaPlugin implements Listener {
                 throw new IllegalArgumentException("maxStrokes musi byc > 0.");
             }
 
+            ballScale = loadBallAttribute(cfg, "ball_scale", 1.0, 0.0625, 16.0);
+            ballBounciness = loadBallAttribute(cfg, "ball_bounciness", 0.0, 0.0, 1.0);
+            ballFrictionModifier = loadBallAttribute(cfg, "ball_friction_modifier", 1.0, 0.0, 2048.0);
+            ballKnockbackResistance = loadBallAttribute(cfg, "ball_knockback_resistance", 0.0, -2.0, 1.0);
+
             String blockName = Objects.requireNonNullElse(cfg.getString("block"), "").trim();
             Material material = Material.matchMaterial(blockName);
 
@@ -1318,6 +1345,26 @@ public final class LainaGolf extends JavaPlugin implements Listener {
             }
 
             blockMaterial = material;
+        }
+
+        private double loadBallAttribute(ConfigurationSection cfg, String key, double defaultValue, double min, double max) {
+            if (!cfg.contains(key)) {
+                return defaultValue;
+            }
+
+            Object rawValue = cfg.get(key);
+            if (!(rawValue instanceof Number number)) {
+                throw new IllegalArgumentException(key + " musi byc liczba.");
+            }
+
+            double value = number.doubleValue();
+            if (!Double.isFinite(value) || value < min || value > max) {
+                throw new IllegalArgumentException(
+                        key + " musi byc liczba z zakresu " + min + " - " + max + "."
+                );
+            }
+
+            return value;
         }
 
         private GolfRegion loadFinishRegion(ConfigurationSection cfg) {
