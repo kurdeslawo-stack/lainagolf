@@ -14,7 +14,12 @@ maps:
     playerSpawn: {world: world_adventure, x: 1005.5, y: 64.0, z: 1050.5, yaw: 0.0, pitch: 0.0}
     ballSpawn: {world: world_adventure, x: 1008.5, y: 64.0, z: 1050.5}
 
-    # Parametry fizyczne pilki. ball_scale: 0.5 oznacza pilke 2x mniejsza.
+    # Parametry fizyczne pilki sa ustawiane osobno dla kazdej planszy.
+    # Brak pola oznacza wartosc domyslna podana ponizej.
+    # ball_scale: rozmiar pilki (0.0625-16.0); 0.5 oznacza pilke 2x mniejsza.
+    # ball_bounciness: sprezystosc odbicia (0.0-1.0); 0.0 oznacza brak odbicia.
+    # ball_friction_modifier: mnoznik tarcia (0.0-2048.0); 1.0 to standardowe tarcie.
+    # ball_knockback_resistance: odpornosc na odrzut (-2.0-1.0); 0.0 to wartosc domyslna.
     ball_scale: 1.0
     ball_bounciness: 0.0
     ball_friction_modifier: 1.0
